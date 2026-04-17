@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Adit AI"
+version = "1.0.0"
+id = "artifacts/adit-ai"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 19447
+
+[services.development]
+run = "pnpm --filter @workspace/adit-ai run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/adit-ai", "run", "build" ]
+publicDir = "artifacts/adit-ai/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19447"
+BASE_PATH = "/"
