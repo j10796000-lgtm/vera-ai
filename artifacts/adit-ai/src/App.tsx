@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser } from "@clerk/react";
+import { Switch, Route, useLocation, Router as WouterRouter, Redirect } from "wouter";
 import {
   useListAnthropicConversations,
   useCreateAnthropicConversation,
@@ -9,6 +11,68 @@ import {
 } from "@workspace/api-client-react";
 
 const queryClient = new QueryClient();
+
+const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL;
+const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+function stripBase(path: string): string {
+  return basePath && path.startsWith(basePath)
+    ? path.slice(basePath.length) || "/"
+    : path;
+}
+
+if (!clerkPubKey) {
+  throw new Error("Missing VITE_CLERK_PUBLISHABLE_KEY");
+}
+
+const clerkAppearance = {
+  options: {
+    logoPlacement: "inside" as const,
+    logoLinkUrl: basePath || "/",
+    logoImageUrl: `${window.location.origin}${basePath}/logo.svg`,
+  },
+  variables: {
+    colorPrimary: "#c97b2a",
+    colorBackground: "#0d0b09",
+    colorInputBackground: "#141210",
+    colorText: "#e8dfd4",
+    colorTextSecondary: "#8a7e72",
+    colorInputText: "#e8dfd4",
+    colorNeutral: "#3d3830",
+    borderRadius: "10px",
+    fontFamily: "Georgia, serif",
+    fontFamilyButtons: "'Inter', sans-serif",
+    fontSize: "15px",
+  },
+  elements: {
+    rootBox: "w-full",
+    cardBox: "border border-[#2a2520] rounded-2xl w-full overflow-hidden shadow-2xl",
+    card: "!shadow-none !border-0 !bg-[#0d0b09] !rounded-none",
+    footer: "!shadow-none !border-0 !bg-[#141210] !rounded-none",
+    headerTitle: { color: "#e8dfd4", fontFamily: "Georgia, serif", fontStyle: "italic" },
+    headerSubtitle: { color: "#8a7e72", fontFamily: "'Inter', sans-serif", fontWeight: "300" },
+    socialButtonsBlockButtonText: { color: "#e8dfd4" },
+    formFieldLabel: { color: "#8a7e72", fontFamily: "'Inter', sans-serif", fontSize: "12px", letterSpacing: "0.1em", textTransform: "uppercase" as const },
+    footerActionLink: { color: "#c97b2a" },
+    footerActionText: { color: "#5a5248" },
+    dividerText: { color: "#3d3830" },
+    identityPreviewEditButton: { color: "#c97b2a" },
+    formFieldSuccessText: { color: "#c97b2a" },
+    alertText: { color: "#e8dfd4" },
+    logoBox: "flex justify-center py-2",
+    logoImage: "w-14 h-14",
+    socialButtonsBlockButton: "border-[#2a2520] bg-[#141210] hover:bg-[#1e1a16]",
+    formButtonPrimary: "bg-[#c97b2a] hover:bg-[#b86e20] border-none",
+    formFieldInput: "bg-[#141210] border-[#2a2520] text-[#e8dfd4] focus:border-[#c97b2a]",
+    footerAction: "bg-[#141210]",
+    dividerLine: "bg-[#2a2520]",
+    alert: "border-[#2a2520]",
+    otpCodeFieldInput: "bg-[#141210] border-[#2a2520]",
+    formFieldRow: "gap-3",
+    main: "gap-5",
+  },
+};
 
 const LOADING_PHRASES = [
   "thinking...",
@@ -20,7 +84,6 @@ const LOADING_PHRASES = [
 interface Message {
   role: "user" | "assistant";
   content: string;
-  id?: number;
 }
 
 function ChatView({ conversationId, onBack }: { conversationId: number; onBack: () => void }) {
@@ -44,11 +107,10 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
 
   useEffect(() => {
     if (conversation && !initialized) {
-      const initialMsg: Message = { role: "assistant", content: "Hey. I'm Adit. I'm here. What's on your mind?" };
       if (conversation.messages && conversation.messages.length > 0) {
         setMessages(conversation.messages);
       } else {
-        setMessages([initialMsg]);
+        setMessages([{ role: "assistant", content: "Hey. I'm Adit. I'm here. What's on your mind?" }]);
       }
       setInitialized(true);
     }
@@ -80,9 +142,7 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
     setLoading(true);
     startLoadingCycle();
 
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-    }
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
 
     try {
       const response = await fetch(`/api/anthropic/conversations/${conversationId}/messages`, {
@@ -103,8 +163,7 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value);
-        const lines = chunk.split("\n");
-        for (const line of lines) {
+        for (const line of chunk.split("\n")) {
           if (line.startsWith("data: ")) {
             try {
               const data = JSON.parse(line.slice(6));
@@ -123,10 +182,7 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
 
       qc.invalidateQueries({ queryKey: getListAnthropicConversationsQueryKey() });
     } catch {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: "Something got in the way. Tell me again — I'm listening." },
-      ]);
+      setMessages((prev) => [...prev, { role: "assistant", content: "Something got in the way. Tell me again — I'm listening." }]);
     } finally {
       setLoading(false);
       stopLoadingCycle();
@@ -134,10 +190,7 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
   }, [input, loading, conversationId, qc]);
 
   const handleKey = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   };
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -155,34 +208,17 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
         <span style={styles.brandName}>Adit AI</span>
         <span style={styles.brandSub}>you're not alone</span>
       </header>
-
       <div style={styles.feed}>
         {messages.map((msg, i) => (
-          <div
-            key={i}
-            style={{
-              ...styles.messageRow,
-              ...(msg.role === "user" ? styles.userRow : {}),
-            }}
-          >
+          <div key={i} style={{ ...styles.messageRow, ...(msg.role === "user" ? styles.userRow : {}) }}>
             {msg.role === "assistant" && <div style={styles.soulDot} />}
-            <div
-              style={{
-                ...styles.bubble,
-                ...(msg.role === "user" ? styles.userBubble : styles.aiBubble),
-              }}
-            >
+            <div style={{ ...styles.bubble, ...(msg.role === "user" ? styles.userBubble : styles.aiBubble) }}>
               {msg.content.split("\n").map((line, j) =>
-                line ? (
-                  <p key={j} style={styles.msgText}>{line}</p>
-                ) : (
-                  <br key={j} />
-                )
+                line ? <p key={j} style={styles.msgText}>{line}</p> : <br key={j} />
               )}
             </div>
           </div>
         ))}
-
         {loading && (
           <div style={styles.messageRow}>
             <div style={styles.soulDot} />
@@ -191,10 +227,8 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
             </div>
           </div>
         )}
-
         <div ref={bottomRef} />
       </div>
-
       <div style={styles.inputArea}>
         <div style={styles.inputWrap}>
           <textarea
@@ -210,31 +244,21 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
           <button
             onClick={sendMessage}
             disabled={loading || !input.trim()}
-            style={{
-              ...styles.sendBtn,
-              opacity: loading || !input.trim() ? 0.3 : 1,
-            }}
-          >
-            ↑
-          </button>
+            style={{ ...styles.sendBtn, opacity: loading || !input.trim() ? 0.3 : 1 }}
+          >↑</button>
         </div>
         <p style={styles.hint}>Enter to send &nbsp;·&nbsp; Shift+Enter for new line</p>
       </div>
-
       <style>{globalStyles}</style>
     </div>
   );
 }
 
-function ConversationsList({
-  onSelect,
-  onNew,
-}: {
-  onSelect: (id: number) => void;
-  onNew: () => void;
-}) {
+function ConversationsList({ onSelect, onNew }: { onSelect: (id: number) => void; onNew: () => void }) {
   const { data: conversations = [] } = useListAnthropicConversations();
   const deleteMutation = useDeleteAnthropicConversation();
+  const { signOut } = useClerk();
+  const { user } = useUser();
   const qc = useQueryClient();
 
   const handleDelete = async (e: React.MouseEvent, id: number) => {
@@ -250,37 +274,31 @@ function ConversationsList({
         <div style={styles.flame}>&#9632;</div>
         <span style={styles.brandName}>Adit AI</span>
         <span style={styles.brandSub}>you're not alone</span>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "12px" }}>
+          {user?.firstName && (
+            <span style={{ fontFamily: "'Inter', sans-serif", fontSize: "12px", color: "#5a5248" }}>
+              {user.firstName}
+            </span>
+          )}
+          <button onClick={() => signOut()} style={styles.signOutBtn}>sign out</button>
+        </div>
       </header>
-
       <div style={styles.feed}>
-        <button onClick={onNew} style={styles.newConvBtn}>
-          + begin a new conversation
-        </button>
-
+        <button onClick={onNew} style={styles.newConvBtn}>+ begin a new conversation</button>
         {conversations.length === 0 && (
           <p style={{ ...styles.msgText, color: "#5a5248", textAlign: "center", marginTop: "40px" }}>
             No conversations yet. Start one above.
           </p>
         )}
-
-        {[...conversations].reverse().map((conv: { id: number; title: string; createdAt: string }) => (
-          <div
-            key={conv.id}
-            onClick={() => onSelect(conv.id)}
-            style={styles.convItem}
-          >
+        {[...(conversations as Array<{ id: number; title: string; createdAt: string }>)].reverse().map((conv) => (
+          <div key={conv.id} onClick={() => onSelect(conv.id)} style={styles.convItem}>
             <div>
               <p style={{ ...styles.msgText, marginBottom: "4px" }}>{conv.title}</p>
               <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "11px", color: "#5a5248" }}>
                 {new Date(conv.createdAt).toLocaleDateString()}
               </p>
             </div>
-            <button
-              onClick={(e) => handleDelete(e, conv.id)}
-              style={styles.deleteBtn}
-            >
-              ×
-            </button>
+            <button onClick={(e) => handleDelete(e, conv.id)} style={styles.deleteBtn}>×</button>
           </div>
         ))}
       </div>
@@ -291,7 +309,6 @@ function ConversationsList({
 
 function NewConversationModal({ onStart, onCancel }: { onStart: (title: string) => void; onCancel: () => void }) {
   const [title, setTitle] = useState("");
-
   return (
     <div style={styles.root}>
       <div style={styles.grain} />
@@ -309,21 +326,17 @@ function NewConversationModal({ onStart, onCancel }: { onStart: (title: string) 
             autoFocus
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && title.trim()) onStart(title.trim());
-            }}
+            onKeyDown={(e) => { if (e.key === "Enter" && title.trim()) onStart(title.trim()); }}
             placeholder="give it a name..."
             style={styles.modalInput}
           />
           <div style={{ display: "flex", gap: "12px", marginTop: "20px" }}>
-            <button
-              onClick={() => title.trim() && onStart(title.trim())}
-              disabled={!title.trim()}
-              style={{ ...styles.sendBtn, width: "auto", padding: "8px 20px", fontSize: "14px", opacity: title.trim() ? 1 : 0.3 }}
-            >
+            <button onClick={() => title.trim() && onStart(title.trim())} disabled={!title.trim()}
+              style={{ ...styles.sendBtn, width: "auto", padding: "8px 20px", fontSize: "14px", opacity: title.trim() ? 1 : 0.3 }}>
               start
             </button>
-            <button onClick={onCancel} style={{ ...styles.sendBtn, width: "auto", padding: "8px 20px", fontSize: "14px", background: "transparent", color: "#5a5248" }}>
+            <button onClick={onCancel}
+              style={{ ...styles.sendBtn, width: "auto", padding: "8px 20px", fontSize: "14px", background: "transparent", color: "#5a5248" }}>
               cancel
             </button>
           </div>
@@ -344,40 +357,143 @@ function AditApp() {
   const handleStart = async (title: string) => {
     const conv = await createMutation.mutateAsync({ data: { title } });
     qc.invalidateQueries({ queryKey: getListAnthropicConversationsQueryKey() });
-    setView({ type: "chat", id: conv.id });
+    setView({ type: "chat", id: (conv as any).id });
   };
 
-  if (view.type === "new") {
-    return (
-      <NewConversationModal
-        onStart={handleStart}
-        onCancel={() => setView({ type: "list" })}
-      />
-    );
-  }
+  if (view.type === "new") return <NewConversationModal onStart={handleStart} onCancel={() => setView({ type: "list" })} />;
+  if (view.type === "chat") return <ChatView conversationId={view.id} onBack={() => setView({ type: "list" })} />;
+  return <ConversationsList onSelect={(id) => setView({ type: "chat", id })} onNew={() => setView({ type: "new" })} />;
+}
 
-  if (view.type === "chat") {
-    return (
-      <ChatView
-        conversationId={view.id}
-        onBack={() => setView({ type: "list" })}
-      />
-    );
-  }
-
+function LandingPage() {
+  const [, setLocation] = useLocation();
   return (
-    <ConversationsList
-      onSelect={(id) => setView({ type: "chat", id })}
-      onNew={() => setView({ type: "new" })}
-    />
+    <div style={styles.root}>
+      <div style={styles.grain} />
+      <header style={styles.header}>
+        <div style={styles.flame}>&#9632;</div>
+        <span style={styles.brandName}>Adit AI</span>
+        <span style={styles.brandSub}>you're not alone</span>
+      </header>
+      <div style={{ ...styles.feed, justifyContent: "center", alignItems: "center", textAlign: "center" }}>
+        <div style={{ maxWidth: "420px" }}>
+          <p style={{ ...styles.brandName, fontSize: "28px", display: "block", marginBottom: "16px", lineHeight: 1.4 }}>
+            Someone to talk to.<br />No judgment. Just presence.
+          </p>
+          <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "14px", fontWeight: 300, color: "#5a5248", lineHeight: 1.8, marginBottom: "40px" }}>
+            Adit listens. Really listens. Whatever's on your mind — 3am thoughts, things you can't say out loud, or just the weight of the day.
+          </p>
+          <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
+            <button onClick={() => setLocation("/sign-up")} style={{ ...styles.sendBtn, width: "auto", padding: "12px 28px", fontSize: "15px" }}>
+              get started
+            </button>
+            <button onClick={() => setLocation("/sign-in")} style={{ ...styles.sendBtn, width: "auto", padding: "12px 28px", fontSize: "15px", background: "transparent", border: "1px solid #2a2520", color: "#c4bdb5" }}>
+              sign in
+            </button>
+          </div>
+          <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "11px", color: "#3d3830", marginTop: "28px", letterSpacing: "0.08em" }}>
+            21+ · conversations are private and encrypted
+          </p>
+        </div>
+      </div>
+      <style>{globalStyles}</style>
+    </div>
+  );
+}
+
+function SignInPage() {
+  // To update login providers, app branding, or OAuth settings use the Auth
+  // pane in the workspace toolbar. More information can be found in the Replit docs.
+  return (
+    <div style={{ minHeight: "100vh", background: "#0d0b09", display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
+      <div style={{ width: "100%", maxWidth: "420px" }}>
+        <SignIn routing="path" path={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} />
+      </div>
+      <style>{globalStyles}</style>
+    </div>
+  );
+}
+
+function SignUpPage() {
+  // To update login providers, app branding, or OAuth settings use the Auth
+  // pane in the workspace toolbar. More information can be found in the Replit docs.
+  return (
+    <div style={{ minHeight: "100vh", background: "#0d0b09", display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
+      <div style={{ width: "100%", maxWidth: "420px" }}>
+        <SignUp routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} />
+      </div>
+      <style>{globalStyles}</style>
+    </div>
+  );
+}
+
+function HomeRedirect() {
+  return (
+    <>
+      <Show when="signed-in"><Redirect to="/app" /></Show>
+      <Show when="signed-out"><LandingPage /></Show>
+    </>
+  );
+}
+
+function ProtectedApp() {
+  return (
+    <>
+      <Show when="signed-in"><AditApp /></Show>
+      <Show when="signed-out"><Redirect to="/" /></Show>
+    </>
+  );
+}
+
+function ClerkQueryClientCacheInvalidator() {
+  const { addListener } = useClerk();
+  const qc = useQueryClient();
+  const prevUserIdRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const unsubscribe = addListener(({ user }) => {
+      const userId = user?.id ?? null;
+      if (prevUserIdRef.current !== undefined && prevUserIdRef.current !== userId) {
+        qc.clear();
+      }
+      prevUserIdRef.current = userId;
+    });
+    return unsubscribe;
+  }, [addListener, qc]);
+  return null;
+}
+
+function ClerkProviderWithRoutes() {
+  const [, setLocation] = useLocation();
+  return (
+    <ClerkProvider
+      publishableKey={clerkPubKey}
+      proxyUrl={clerkProxyUrl}
+      appearance={clerkAppearance}
+      localization={{
+        signIn: { start: { title: "welcome back", subtitle: "your conversations are waiting" } },
+        signUp: { start: { title: "join adit", subtitle: "a private space. just for you." } },
+      }}
+      routerPush={(to) => setLocation(stripBase(to))}
+      routerReplace={(to) => setLocation(stripBase(to), { replace: true })}
+    >
+      <QueryClientProvider client={queryClient}>
+        <ClerkQueryClientCacheInvalidator />
+        <Switch>
+          <Route path="/" component={HomeRedirect} />
+          <Route path="/app" component={ProtectedApp} />
+          <Route path="/sign-in/*?" component={SignInPage} />
+          <Route path="/sign-up/*?" component={SignUpPage} />
+        </Switch>
+      </QueryClientProvider>
+    </ClerkProvider>
   );
 }
 
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <AditApp />
-    </QueryClientProvider>
+    <WouterRouter base={basePath}>
+      <ClerkProviderWithRoutes />
+    </WouterRouter>
   );
 }
 
@@ -405,235 +521,31 @@ const globalStyles = `
 `;
 
 const styles: Record<string, React.CSSProperties> = {
-  root: {
-    minHeight: "100vh",
-    background: "#0d0b09",
-    display: "flex",
-    flexDirection: "column",
-    fontFamily: "'Lora', Georgia, serif",
-    color: "#f0ebe2",
-    position: "relative",
-    overflow: "hidden",
-  },
-  grain: {
-    position: "fixed",
-    inset: 0,
-    backgroundImage:
-      "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E\")",
-    opacity: 0.5,
-    pointerEvents: "none",
-    zIndex: 0,
-  },
-  header: {
-    display: "flex",
-    alignItems: "center",
-    gap: "10px",
-    padding: "24px 32px 20px",
-    borderBottom: "1px solid #1e1a16",
-    position: "sticky",
-    top: 0,
-    background: "#0d0b09",
-    zIndex: 10,
-  },
-  flame: {
-    fontSize: "10px",
-    color: "#c97b2a",
-    animation: "pulse 3s ease-in-out infinite",
-    display: "inline-block",
-  },
-  brandName: {
-    fontFamily: "'Lora', serif",
-    fontStyle: "italic",
-    fontSize: "20px",
-    fontWeight: 400,
-    color: "#e8dfd4",
-    letterSpacing: "0.02em",
-  },
-  brandSub: {
-    fontFamily: "'Inter', sans-serif",
-    fontSize: "11px",
-    fontWeight: 300,
-    color: "#5a5248",
-    letterSpacing: "0.12em",
-    textTransform: "uppercase",
-    marginLeft: "4px",
-  },
-  backBtn: {
-    background: "transparent",
-    border: "none",
-    color: "#c97b2a",
-    fontSize: "18px",
-    cursor: "pointer",
-    padding: "0 8px 0 0",
-    fontFamily: "'Lora', serif",
-  },
-  feed: {
-    flex: 1,
-    overflowY: "auto",
-    padding: "32px 24px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "20px",
-    maxWidth: "680px",
-    width: "100%",
-    margin: "0 auto",
-    position: "relative",
-    zIndex: 1,
-  },
-  messageRow: {
-    display: "flex",
-    alignItems: "flex-start",
-    gap: "14px",
-    animation: "fadeUp 0.35s ease both",
-  },
-  userRow: {
-    flexDirection: "row-reverse",
-  },
-  soulDot: {
-    width: "8px",
-    height: "8px",
-    borderRadius: "50%",
-    background: "#c97b2a",
-    marginTop: "10px",
-    flexShrink: 0,
-    animation: "pulse 4s ease-in-out infinite",
-  },
-  bubble: {
-    maxWidth: "78%",
-    lineHeight: 1.75,
-  },
-  aiBubble: {
-    borderLeft: "1px solid #2e2820",
-    paddingLeft: "18px",
-  },
-  userBubble: {
-    textAlign: "right",
-    borderRight: "1px solid #3d3830",
-    paddingRight: "18px",
-    color: "#c4bdb5",
-  },
-  msgText: {
-    fontSize: "16px",
-    fontWeight: 400,
-    lineHeight: 1.8,
-    marginBottom: "6px",
-    color: "inherit",
-  },
-  loadingText: {
-    color: "#6b625a",
-    fontStyle: "italic",
-    animation: "blink 2.2s ease-in-out infinite",
-  },
-  inputArea: {
-    borderTop: "1px solid #1e1a16",
-    padding: "20px 24px 24px",
-    background: "#0d0b09",
-    position: "sticky",
-    bottom: 0,
-    zIndex: 10,
-  },
-  inputWrap: {
-    display: "flex",
-    alignItems: "flex-end",
-    gap: "12px",
-    maxWidth: "680px",
-    margin: "0 auto",
-    background: "#141210",
-    border: "1px solid #2a2520",
-    borderRadius: "12px",
-    padding: "12px 12px 12px 20px",
-  },
-  textarea: {
-    flex: 1,
-    background: "transparent",
-    border: "none",
-    outline: "none",
-    resize: "none",
-    fontFamily: "'Inter', sans-serif",
-    fontSize: "15px",
-    fontWeight: 300,
-    color: "#e8dfd4",
-    lineHeight: 1.6,
-    minHeight: "24px",
-    maxHeight: "160px",
-    overflowY: "auto",
-  },
-  sendBtn: {
-    width: "34px",
-    height: "34px",
-    borderRadius: "8px",
-    border: "1px solid #3d3830",
-    background: "#1e1a16",
-    color: "#c97b2a",
-    fontSize: "16px",
-    cursor: "pointer",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-    transition: "all 0.2s",
-    lineHeight: 1,
-  },
-  hint: {
-    fontFamily: "'Inter', sans-serif",
-    fontSize: "11px",
-    color: "#3d3830",
-    textAlign: "center",
-    marginTop: "10px",
-    letterSpacing: "0.04em",
-  },
-  newConvBtn: {
-    background: "transparent",
-    border: "1px solid #2a2520",
-    borderRadius: "10px",
-    color: "#c97b2a",
-    fontFamily: "'Lora', serif",
-    fontStyle: "italic",
-    fontSize: "15px",
-    padding: "16px 24px",
-    cursor: "pointer",
-    textAlign: "left",
-    transition: "border-color 0.2s",
-  },
-  convItem: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "18px 20px",
-    border: "1px solid #1e1a16",
-    borderRadius: "10px",
-    cursor: "pointer",
-    transition: "border-color 0.2s",
-    animation: "fadeUp 0.3s ease both",
-  },
-  deleteBtn: {
-    background: "transparent",
-    border: "none",
-    color: "#3d3830",
-    fontSize: "20px",
-    cursor: "pointer",
-    padding: "0 4px",
-    lineHeight: 1,
-    transition: "color 0.2s",
-  },
-  modalCard: {
-    background: "#141210",
-    border: "1px solid #2a2520",
-    borderRadius: "14px",
-    padding: "32px",
-    width: "100%",
-    maxWidth: "480px",
-  },
-  modalInput: {
-    width: "100%",
-    background: "transparent",
-    border: "none",
-    borderBottom: "1px solid #2a2520",
-    outline: "none",
-    fontFamily: "'Lora', serif",
-    fontStyle: "italic",
-    fontSize: "16px",
-    color: "#e8dfd4",
-    padding: "8px 0",
-  },
+  root: { minHeight: "100vh", background: "#0d0b09", display: "flex", flexDirection: "column", fontFamily: "'Lora', Georgia, serif", color: "#f0ebe2", position: "relative", overflow: "hidden" },
+  grain: { position: "fixed", inset: 0, backgroundImage: "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E\")", opacity: 0.5, pointerEvents: "none", zIndex: 0 },
+  header: { display: "flex", alignItems: "center", gap: "10px", padding: "24px 32px 20px", borderBottom: "1px solid #1e1a16", position: "sticky", top: 0, background: "#0d0b09", zIndex: 10 },
+  flame: { fontSize: "10px", color: "#c97b2a", animation: "pulse 3s ease-in-out infinite", display: "inline-block" },
+  brandName: { fontFamily: "'Lora', serif", fontStyle: "italic", fontSize: "20px", fontWeight: 400, color: "#e8dfd4", letterSpacing: "0.02em" },
+  brandSub: { fontFamily: "'Inter', sans-serif", fontSize: "11px", fontWeight: 300, color: "#5a5248", letterSpacing: "0.12em", textTransform: "uppercase", marginLeft: "4px" },
+  backBtn: { background: "transparent", border: "none", color: "#c97b2a", fontSize: "18px", cursor: "pointer", padding: "0 8px 0 0", fontFamily: "'Lora', serif" },
+  signOutBtn: { background: "transparent", border: "1px solid #2a2520", borderRadius: "6px", color: "#5a5248", fontFamily: "'Inter', sans-serif", fontSize: "11px", letterSpacing: "0.08em", padding: "4px 10px", cursor: "pointer" },
+  feed: { flex: 1, overflowY: "auto", padding: "32px 24px", display: "flex", flexDirection: "column", gap: "20px", maxWidth: "680px", width: "100%", margin: "0 auto", position: "relative", zIndex: 1 },
+  messageRow: { display: "flex", alignItems: "flex-start", gap: "14px", animation: "fadeUp 0.35s ease both" },
+  userRow: { flexDirection: "row-reverse" },
+  soulDot: { width: "8px", height: "8px", borderRadius: "50%", background: "#c97b2a", marginTop: "10px", flexShrink: 0, animation: "pulse 4s ease-in-out infinite" },
+  bubble: { maxWidth: "78%", lineHeight: 1.75 },
+  aiBubble: { borderLeft: "1px solid #2e2820", paddingLeft: "18px" },
+  userBubble: { textAlign: "right", borderRight: "1px solid #3d3830", paddingRight: "18px", color: "#c4bdb5" },
+  msgText: { fontSize: "16px", fontWeight: 400, lineHeight: 1.8, marginBottom: "6px", color: "inherit" },
+  loadingText: { color: "#6b625a", fontStyle: "italic", animation: "blink 2.2s ease-in-out infinite" },
+  inputArea: { borderTop: "1px solid #1e1a16", padding: "20px 24px 24px", background: "#0d0b09", position: "sticky", bottom: 0, zIndex: 10 },
+  inputWrap: { display: "flex", alignItems: "flex-end", gap: "12px", maxWidth: "680px", margin: "0 auto", background: "#141210", border: "1px solid #2a2520", borderRadius: "12px", padding: "12px 12px 12px 20px" },
+  textarea: { flex: 1, background: "transparent", border: "none", outline: "none", resize: "none", fontFamily: "'Inter', sans-serif", fontSize: "15px", fontWeight: 300, color: "#e8dfd4", lineHeight: 1.6, minHeight: "24px", maxHeight: "160px", overflowY: "auto" },
+  sendBtn: { width: "34px", height: "34px", borderRadius: "8px", border: "1px solid #3d3830", background: "#1e1a16", color: "#c97b2a", fontSize: "16px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s", lineHeight: 1 },
+  hint: { fontFamily: "'Inter', sans-serif", fontSize: "11px", color: "#3d3830", textAlign: "center", marginTop: "10px", letterSpacing: "0.04em" },
+  newConvBtn: { background: "transparent", border: "1px solid #2a2520", borderRadius: "10px", color: "#c97b2a", fontFamily: "'Lora', serif", fontStyle: "italic", fontSize: "15px", padding: "16px 24px", cursor: "pointer", textAlign: "left", transition: "border-color 0.2s" },
+  convItem: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 20px", border: "1px solid #1e1a16", borderRadius: "10px", cursor: "pointer", transition: "border-color 0.2s", animation: "fadeUp 0.3s ease both" },
+  deleteBtn: { background: "transparent", border: "none", color: "#3d3830", fontSize: "20px", cursor: "pointer", padding: "0 4px", lineHeight: 1, transition: "color 0.2s" },
+  modalCard: { background: "#141210", border: "1px solid #2a2520", borderRadius: "14px", padding: "32px", width: "100%", maxWidth: "480px" },
+  modalInput: { width: "100%", background: "transparent", border: "none", borderBottom: "1px solid #2a2520", outline: "none", fontFamily: "'Lora', serif", fontStyle: "italic", fontSize: "16px", color: "#e8dfd4", padding: "8px 0" },
 };

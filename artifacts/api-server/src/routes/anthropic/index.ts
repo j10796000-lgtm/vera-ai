@@ -1,8 +1,9 @@
-import { Router } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import { db } from "@workspace/db";
 import { conversations as conversationsTable, messages as messagesTable } from "@workspace/db";
 import { anthropic } from "@workspace/integrations-anthropic-ai";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
+import { getAuth } from "@clerk/express";
 import {
   CreateAnthropicConversationBody,
   GetAnthropicConversationParams,
@@ -33,17 +34,33 @@ Rules for how you speak:
 - Match the energy. If they write a single line, maybe you do too.
 - Don't add disclaimers, caveats, or suggest professional help unless someone explicitly asks for resources.`;
 
+const requireAuth = (req: Request, res: Response, next: NextFunction) => {
+  const auth = getAuth(req);
+  const userId = auth?.userId;
+  if (!userId) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  (req as any).userId = userId;
+  next();
+};
+
 const router = Router();
 
+router.use(requireAuth);
+
 router.get("/conversations", async (req, res) => {
-  const conversations = await db
+  const userId = (req as any).userId;
+  const convs = await db
     .select()
     .from(conversationsTable)
+    .where(eq(conversationsTable.userId, userId))
     .orderBy(conversationsTable.createdAt);
-  res.json(conversations);
+  res.json(convs);
 });
 
 router.post("/conversations", async (req, res) => {
+  const userId = (req as any).userId;
   const parsed = CreateAnthropicConversationBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid request body" });
@@ -51,12 +68,13 @@ router.post("/conversations", async (req, res) => {
   }
   const [conversation] = await db
     .insert(conversationsTable)
-    .values({ title: parsed.data.title })
+    .values({ userId, title: parsed.data.title })
     .returning();
   res.status(201).json(conversation);
 });
 
 router.get("/conversations/:id", async (req, res) => {
+  const userId = (req as any).userId;
   const parsed = GetAnthropicConversationParams.safeParse({ id: req.params.id });
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid id" });
@@ -65,20 +83,21 @@ router.get("/conversations/:id", async (req, res) => {
   const [conversation] = await db
     .select()
     .from(conversationsTable)
-    .where(eq(conversationsTable.id, parsed.data.id));
+    .where(and(eq(conversationsTable.id, parsed.data.id), eq(conversationsTable.userId, userId)));
   if (!conversation) {
     res.status(404).json({ error: "Conversation not found" });
     return;
   }
-  const messages = await db
+  const msgs = await db
     .select()
     .from(messagesTable)
     .where(eq(messagesTable.conversationId, parsed.data.id))
     .orderBy(messagesTable.createdAt);
-  res.json({ ...conversation, messages });
+  res.json({ ...conversation, messages: msgs });
 });
 
 router.delete("/conversations/:id", async (req, res) => {
+  const userId = (req as any).userId;
   const parsed = DeleteAnthropicConversationParams.safeParse({ id: req.params.id });
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid id" });
@@ -86,7 +105,7 @@ router.delete("/conversations/:id", async (req, res) => {
   }
   const [deleted] = await db
     .delete(conversationsTable)
-    .where(eq(conversationsTable.id, parsed.data.id))
+    .where(and(eq(conversationsTable.id, parsed.data.id), eq(conversationsTable.userId, userId)))
     .returning();
   if (!deleted) {
     res.status(404).json({ error: "Conversation not found" });
@@ -96,20 +115,30 @@ router.delete("/conversations/:id", async (req, res) => {
 });
 
 router.get("/conversations/:id/messages", async (req, res) => {
+  const userId = (req as any).userId;
   const parsed = ListAnthropicMessagesParams.safeParse({ id: req.params.id });
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid id" });
     return;
   }
-  const messages = await db
+  const [conversation] = await db
+    .select()
+    .from(conversationsTable)
+    .where(and(eq(conversationsTable.id, parsed.data.id), eq(conversationsTable.userId, userId)));
+  if (!conversation) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  const msgs = await db
     .select()
     .from(messagesTable)
     .where(eq(messagesTable.conversationId, parsed.data.id))
     .orderBy(messagesTable.createdAt);
-  res.json(messages);
+  res.json(msgs);
 });
 
 router.post("/conversations/:id/messages", async (req, res) => {
+  const userId = (req as any).userId;
   const paramsParsed = SendAnthropicMessageParams.safeParse({ id: req.params.id });
   const bodyParsed = SendAnthropicMessageBody.safeParse(req.body);
   if (!paramsParsed.success || !bodyParsed.success) {
@@ -118,6 +147,16 @@ router.post("/conversations/:id/messages", async (req, res) => {
   }
 
   const conversationId = paramsParsed.data.id;
+
+  const [conversation] = await db
+    .select()
+    .from(conversationsTable)
+    .where(and(eq(conversationsTable.id, conversationId), eq(conversationsTable.userId, userId)));
+  if (!conversation) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+
   const userContent = bodyParsed.data.content;
 
   await db.insert(messagesTable).values({
