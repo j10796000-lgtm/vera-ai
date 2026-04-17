@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { QueryClient, QueryClientProvider, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser } from "@clerk/react";
 import { Switch, Route, useLocation, Router as WouterRouter, Redirect } from "wouter";
 import {
@@ -81,9 +81,33 @@ const LOADING_PHRASES = [
   "feeling into it...",
 ];
 
+const IMAGE_MIMES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+
 interface Message {
   role: "user" | "assistant";
   content: string;
+  attachmentName?: string | null;
+}
+
+function fileIcon(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  if (["jpg", "jpeg", "png", "gif", "webp"].includes(ext)) return "🖼";
+  if (ext === "pdf") return "📄";
+  if (["csv", "xlsx", "xls"].includes(ext)) return "📊";
+  if (["js", "ts", "tsx", "jsx", "py", "rb", "go", "rs", "java", "c", "cpp", "cs", "html", "css"].includes(ext)) return "💻";
+  return "📎";
+}
+
+function AttachmentBadge({ name, onRemove }: { name: string; onRemove?: () => void }) {
+  return (
+    <div style={styles.attachBadge}>
+      <span style={{ fontSize: "13px" }}>{fileIcon(name)}</span>
+      <span style={styles.attachName}>{name}</span>
+      {onRemove && (
+        <button onClick={onRemove} style={styles.attachRemove}>×</button>
+      )}
+    </div>
+  );
 }
 
 function ChatView({ conversationId, onBack }: { conversationId: number; onBack: () => void }) {
@@ -92,8 +116,11 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadingPhrase, setLoadingPhrase] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const phraseInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const [initialized, setInitialized] = useState(false);
 
@@ -133,22 +160,65 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
     if (phraseInterval.current) clearInterval(phraseInterval.current);
   };
 
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSelectedFile(file);
+    if (IMAGE_MIMES.includes(file.type)) {
+      const url = URL.createObjectURL(file);
+      setImagePreview(url);
+    } else {
+      setImagePreview(null);
+    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const clearFile = () => {
+    setSelectedFile(null);
+    if (imagePreview) { URL.revokeObjectURL(imagePreview); setImagePreview(null); }
+  };
+
   const sendMessage = useCallback(async () => {
     const text = input.trim();
-    if (!text || loading) return;
+    if ((!text && !selectedFile) || loading) return;
 
-    setMessages((prev) => [...prev, { role: "user", content: text }]);
+    const file = selectedFile;
+    const previewUrl = imagePreview;
+
+    const userMsg: Message = {
+      role: "user",
+      content: text || `shared ${file?.name}`,
+      attachmentName: file?.name ?? null,
+    };
+    setMessages((prev) => [...prev, userMsg]);
     setInput("");
+    setSelectedFile(null);
+    setImagePreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
     setLoading(true);
     startLoadingCycle();
 
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
 
     try {
+      let body: BodyInit;
+      let headers: HeadersInit = {};
+
+      if (file) {
+        const fd = new FormData();
+        fd.append("content", text);
+        fd.append("file", file);
+        body = fd;
+      } else {
+        headers = { "Content-Type": "application/json" };
+        body = JSON.stringify({ content: text });
+      }
+
       const response = await fetch(`/api/anthropic/conversations/${conversationId}/messages`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: text }),
+        headers,
+        body,
       });
 
       if (!response.body) throw new Error("No stream");
@@ -187,7 +257,7 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
       setLoading(false);
       stopLoadingCycle();
     }
-  }, [input, loading, conversationId, qc]);
+  }, [input, selectedFile, imagePreview, loading, conversationId, qc]);
 
   const handleKey = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
@@ -198,6 +268,8 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
     e.target.style.height = "auto";
     e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
   };
+
+  const canSend = !loading && (input.trim().length > 0 || selectedFile !== null);
 
   return (
     <div style={styles.root}>
@@ -213,7 +285,10 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
           <div key={i} style={{ ...styles.messageRow, ...(msg.role === "user" ? styles.userRow : {}) }}>
             {msg.role === "assistant" && <div style={styles.soulDot} />}
             <div style={{ ...styles.bubble, ...(msg.role === "user" ? styles.userBubble : styles.aiBubble) }}>
-              {msg.content.split("\n").map((line, j) =>
+              {msg.attachmentName && (
+                <AttachmentBadge name={msg.attachmentName} />
+              )}
+              {msg.content && msg.content.split("\n").map((line, j) =>
                 line ? <p key={j} style={styles.msgText}>{line}</p> : <br key={j} />
               )}
             </div>
@@ -230,24 +305,55 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
         <div ref={bottomRef} />
       </div>
       <div style={styles.inputArea}>
-        <div style={styles.inputWrap}>
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={handleInput}
-            onKeyDown={handleKey}
-            placeholder="say what's real..."
-            rows={1}
-            style={styles.textarea}
-            disabled={loading}
-          />
-          <button
-            onClick={sendMessage}
-            disabled={loading || !input.trim()}
-            style={{ ...styles.sendBtn, opacity: loading || !input.trim() ? 0.3 : 1 }}
-          >↑</button>
+        <div style={{ maxWidth: "680px", margin: "0 auto" }}>
+          {selectedFile && (
+            <div style={styles.filePreviewArea}>
+              {imagePreview ? (
+                <div style={styles.imagePreviewWrap}>
+                  <img src={imagePreview} alt="preview" style={styles.imagePreview} />
+                  <button onClick={clearFile} style={styles.imageRemove}>×</button>
+                </div>
+              ) : (
+                <AttachmentBadge name={selectedFile.name} onRemove={clearFile} />
+              )}
+            </div>
+          )}
+          <div style={styles.inputWrap}>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*,.pdf,.txt,.csv,.md,.json,.js,.ts,.tsx,.jsx,.py,.html,.css,.xml,.yaml,.yml,.rb,.go,.rs,.java,.c,.cpp,.cs"
+              onChange={handleFileSelect}
+              style={{ display: "none" }}
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={loading}
+              title="Attach a file"
+              style={{ ...styles.attachBtn, opacity: loading ? 0.3 : 1 }}
+            >
+              📎
+            </button>
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={handleInput}
+              onKeyDown={handleKey}
+              placeholder={selectedFile ? "add a message... (optional)" : "say what's real..."}
+              rows={1}
+              style={styles.textarea}
+              disabled={loading}
+            />
+            <button
+              onClick={sendMessage}
+              disabled={!canSend}
+              style={{ ...styles.sendBtn, opacity: canSend ? 1 : 0.3 }}
+            >↑</button>
+          </div>
+          <p style={styles.hint}>
+            Enter to send &nbsp;·&nbsp; Shift+Enter for new line &nbsp;·&nbsp; attach images, PDFs, docs &amp; code
+          </p>
         </div>
-        <p style={styles.hint}>Enter to send &nbsp;·&nbsp; Shift+Enter for new line</p>
       </div>
       <style>{globalStyles}</style>
     </div>
@@ -538,11 +644,19 @@ const styles: Record<string, React.CSSProperties> = {
   userBubble: { textAlign: "right", borderRight: "1px solid #3d3830", paddingRight: "18px", color: "#c4bdb5" },
   msgText: { fontSize: "16px", fontWeight: 400, lineHeight: 1.8, marginBottom: "6px", color: "inherit" },
   loadingText: { color: "#6b625a", fontStyle: "italic", animation: "blink 2.2s ease-in-out infinite" },
-  inputArea: { borderTop: "1px solid #1e1a16", padding: "20px 24px 24px", background: "#0d0b09", position: "sticky", bottom: 0, zIndex: 10 },
-  inputWrap: { display: "flex", alignItems: "flex-end", gap: "12px", maxWidth: "680px", margin: "0 auto", background: "#141210", border: "1px solid #2a2520", borderRadius: "12px", padding: "12px 12px 12px 20px" },
+  inputArea: { borderTop: "1px solid #1e1a16", padding: "16px 24px 24px", background: "#0d0b09", position: "sticky", bottom: 0, zIndex: 10 },
+  inputWrap: { display: "flex", alignItems: "flex-end", gap: "10px", background: "#141210", border: "1px solid #2a2520", borderRadius: "12px", padding: "10px 10px 10px 14px" },
   textarea: { flex: 1, background: "transparent", border: "none", outline: "none", resize: "none", fontFamily: "'Inter', sans-serif", fontSize: "15px", fontWeight: 300, color: "#e8dfd4", lineHeight: 1.6, minHeight: "24px", maxHeight: "160px", overflowY: "auto" },
+  attachBtn: { width: "30px", height: "30px", borderRadius: "6px", border: "none", background: "transparent", color: "#5a5248", fontSize: "16px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, paddingBottom: "2px" },
   sendBtn: { width: "34px", height: "34px", borderRadius: "8px", border: "1px solid #3d3830", background: "#1e1a16", color: "#c97b2a", fontSize: "16px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s", lineHeight: 1 },
   hint: { fontFamily: "'Inter', sans-serif", fontSize: "11px", color: "#3d3830", textAlign: "center", marginTop: "10px", letterSpacing: "0.04em" },
+  filePreviewArea: { marginBottom: "10px", display: "flex", alignItems: "flex-start", gap: "8px" },
+  attachBadge: { display: "inline-flex", alignItems: "center", gap: "6px", background: "#1a1612", border: "1px solid #2e2820", borderRadius: "8px", padding: "5px 10px 5px 8px", maxWidth: "100%" },
+  attachName: { fontFamily: "'Inter', sans-serif", fontSize: "12px", color: "#8a7e72", whiteSpace: "nowrap" as const, overflow: "hidden" as const, textOverflow: "ellipsis" as const, maxWidth: "200px" },
+  attachRemove: { background: "transparent", border: "none", color: "#5a5248", fontSize: "16px", cursor: "pointer", lineHeight: 1, padding: "0 0 0 2px" },
+  imagePreviewWrap: { position: "relative", display: "inline-block" },
+  imagePreview: { maxHeight: "120px", maxWidth: "200px", borderRadius: "8px", border: "1px solid #2e2820", display: "block" },
+  imageRemove: { position: "absolute", top: "-8px", right: "-8px", background: "#1a1612", border: "1px solid #2e2820", borderRadius: "50%", width: "20px", height: "20px", color: "#8a7e72", fontSize: "13px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 },
   newConvBtn: { background: "transparent", border: "1px solid #2a2520", borderRadius: "10px", color: "#c97b2a", fontFamily: "'Lora', serif", fontStyle: "italic", fontSize: "15px", padding: "16px 24px", cursor: "pointer", textAlign: "left", transition: "border-color 0.2s" },
   convItem: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 20px", border: "1px solid #1e1a16", borderRadius: "10px", cursor: "pointer", transition: "border-color 0.2s", animation: "fadeUp 0.3s ease both" },
   deleteBtn: { background: "transparent", border: "none", color: "#3d3830", fontSize: "20px", cursor: "pointer", padding: "0 4px", lineHeight: 1, transition: "color 0.2s" },
