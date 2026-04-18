@@ -261,7 +261,7 @@ router.post(
     let fullResponse = "";
 
     const stream = anthropic.messages.stream({
-      model: "claude-opus-4-5",
+      model: "claude-opus-4-7",
       max_tokens: 8192,
       system: SYSTEM_PROMPT,
       messages: chatMessages,
