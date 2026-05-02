@@ -19,5 +19,4 @@
 
 export * from "./conversations";
 export * from "./messages";
-export * from "./socialPosts";
-export * from "./socialFollows";
+export * from "./users";

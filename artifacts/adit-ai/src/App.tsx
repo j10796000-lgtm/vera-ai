@@ -53,10 +53,9 @@ const clerkAppearance = {
 
 const LOADING_PHRASES = ["thinking...", "sitting with that...", "with you...", "feeling into it..."];
 const IMAGE_MIMES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+const FREE_DAILY_LIMIT = 10;
 
-interface Message { role: "user" | "assistant"; content: string; attachmentName?: string | null; }
-interface SocialPost { id: number; userId: string; userName: string; userImageUrl: string | null; content: string; createdAt: string; isOwn: boolean; isFollowing: boolean; }
-interface UserProfile { userId: string; userName: string; userImageUrl: string | null; followersCount: number; followingCount: number; isFollowing: boolean; isOwn: boolean; posts: SocialPost[]; }
+interface Message { role: "user" | "assistant"; content: string; attachmentName?: string | null; imageUrl?: string | null; }
 
 function fileIcon(name: string): string {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
@@ -77,204 +76,143 @@ function AttachmentBadge({ name, onRemove }: { name: string; onRemove?: () => vo
   );
 }
 
-function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
+function getDailyCount(): number {
+  const today = new Date().toISOString().split("T")[0];
+  const stored = localStorage.getItem("vera_last_reset");
+  if (stored !== today) {
+    localStorage.setItem("vera_last_reset", today);
+    localStorage.setItem("vera_msg_count", "0");
+    return 0;
+  }
+  return parseInt(localStorage.getItem("vera_msg_count") ?? "0", 10);
 }
 
-function UserAvatar({ name, imageUrl, size = 36 }: { name: string; imageUrl?: string | null; size?: number }) {
-  const initials = name.split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
-  if (imageUrl) return <img src={imageUrl} alt={name} style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", border: "1px solid #2a2520" }} />;
-  return (
-    <div style={{ width: size, height: size, borderRadius: "50%", background: "#1e1a16", border: "1px solid #2a2520", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter', sans-serif", fontSize: size * 0.35, fontWeight: 600, color: "#c97b2a", flexShrink: 0 }}>
-      {initials}
-    </div>
-  );
+function incrementDailyCount(): number {
+  const today = new Date().toISOString().split("T")[0];
+  localStorage.setItem("vera_last_reset", today);
+  const current = parseInt(localStorage.getItem("vera_msg_count") ?? "0", 10);
+  const next = current + 1;
+  localStorage.setItem("vera_msg_count", String(next));
+  return next;
 }
 
-function PostCard({ post, onFollow, onDelete, onProfileClick }: { post: SocialPost; onFollow: (id: string, following: boolean) => void; onDelete: (id: number) => void; onProfileClick: (userId: string) => void }) {
-  const [optimisticFollowing, setOptimisticFollowing] = useState(post.isFollowing);
-
-  const handleFollow = async () => {
-    const next = !optimisticFollowing;
-    setOptimisticFollowing(next);
-    await onFollow(post.userId, next);
-  };
-
-  return (
-    <div style={s.postCard}>
-      <div style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
-        <button onClick={() => onProfileClick(post.userId)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-          <UserAvatar name={post.userName} imageUrl={post.userImageUrl} />
-        </button>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
-            <button onClick={() => onProfileClick(post.userId)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "'Inter', sans-serif", fontSize: "13px", fontWeight: 500, color: "#c4bdb5" }}>
-              {post.userName}
-            </button>
-            <span style={{ fontFamily: "'Inter', sans-serif", fontSize: "11px", color: "#3d3830" }}>{timeAgo(post.createdAt)}</span>
-            {!post.isOwn && (
-              <button onClick={handleFollow} style={{ ...s.followBtn, background: optimisticFollowing ? "transparent" : "#c97b2a", color: optimisticFollowing ? "#5a5248" : "#0d0b09", border: optimisticFollowing ? "1px solid #3d3830" : "none" }}>
-                {optimisticFollowing ? "following" : "follow"}
-              </button>
-            )}
-            {post.isOwn && (
-              <button onClick={() => onDelete(post.id)} style={s.deletePostBtn}>×</button>
-            )}
-          </div>
-          <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "15px", fontWeight: 300, color: "#e8dfd4", lineHeight: 1.75, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{post.content}</p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SocialFeed({ onProfileClick }: { onProfileClick: (userId: string) => void }) {
-  const [tab, setTab] = useState<"feed" | "discover">("feed");
-  const [postContent, setPostContent] = useState("");
-  const [posting, setPosting] = useState(false);
-  const qc = useQueryClient();
-
-  const { data: feedPosts = [], refetch: refetchFeed } = useQuery<SocialPost[]>({
-    queryKey: ["social", "feed"],
-    queryFn: async () => { const r = await fetch("/api/social/feed"); return r.json(); },
+function useSubscriptionStatus() {
+  const { data } = useQuery<{ isPro: boolean }>({
+    queryKey: ["subscription-status"],
+    queryFn: async () => {
+      try {
+        const r = await fetch("/api/subscription/status");
+        if (!r.ok) return { isPro: false };
+        return r.json();
+      } catch {
+        return { isPro: false };
+      }
+    },
+    staleTime: 5 * 60 * 1000,
   });
+  return data?.isPro ?? false;
+}
 
-  const { data: discoverPosts = [], refetch: refetchDiscover } = useQuery<SocialPost[]>({
-    queryKey: ["social", "discover"],
-    queryFn: async () => { const r = await fetch("/api/social/discover"); return r.json(); },
-  });
-
-  const posts = tab === "feed" ? feedPosts : discoverPosts;
-
-  const handlePost = async () => {
-    const content = postContent.trim();
-    if (!content || posting) return;
-    setPosting(true);
-    try {
-      await fetch("/api/social/posts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) });
-      setPostContent("");
-      refetchFeed();
-      refetchDiscover();
-    } finally {
-      setPosting(false);
-    }
-  };
-
-  const handleFollow = async (userId: string, follow: boolean) => {
-    if (follow) {
-      await fetch(`/api/social/follow/${userId}`, { method: "POST" });
-    } else {
-      await fetch(`/api/social/follow/${userId}`, { method: "DELETE" });
-    }
-    refetchFeed();
-    refetchDiscover();
-  };
-
-  const handleDelete = async (id: number) => {
-    await fetch(`/api/social/posts/${id}`, { method: "DELETE" });
-    refetchFeed();
-    refetchDiscover();
-  };
-
+function PaywallModal({ onClose, onUpgrade }: { onClose: () => void; onUpgrade: () => void }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-      <div style={s.createPostCard}>
-        <textarea
-          value={postContent}
-          onChange={(e) => setPostContent(e.target.value)}
-          placeholder="what's real right now..."
-          rows={3}
-          style={s.postTextarea}
-          onKeyDown={(e) => { if (e.key === "Enter" && e.metaKey) handlePost(); }}
-        />
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "10px" }}>
-          <button onClick={handlePost} disabled={posting || !postContent.trim()} style={{ ...s.postBtn, opacity: posting || !postContent.trim() ? 0.4 : 1 }}>
-            {posting ? "sharing..." : "share"}
+    <div style={s.overlay}>
+      <div style={s.paywallCard}>
+        <div style={{ fontSize: "32px", marginBottom: "16px" }}>✦</div>
+        <p style={{ ...s.brandName, fontSize: "22px", display: "block", marginBottom: "12px" }}>You've reached your limit</p>
+        <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "14px", fontWeight: 300, color: "#8a7e72", lineHeight: 1.8, marginBottom: "32px" }}>
+          Free conversations are capped at {FREE_DAILY_LIMIT} messages per day. Upgrade to Pro for unlimited — Vera is always here.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <button onClick={onUpgrade} style={{ ...s.sendBtn, width: "100%", height: "auto", padding: "14px 24px", fontSize: "15px", fontFamily: "'Lora', serif", fontStyle: "italic" }}>
+            go pro — $9/month
+          </button>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: "#5a5248", fontFamily: "'Inter', sans-serif", fontSize: "13px", cursor: "pointer", padding: "8px" }}>
+            maybe later
           </button>
         </div>
       </div>
-
-      <div style={s.subTabs}>
-        <button onClick={() => setTab("feed")} style={{ ...s.subTab, ...(tab === "feed" ? s.subTabActive : {}) }}>your feed</button>
-        <button onClick={() => setTab("discover")} style={{ ...s.subTab, ...(tab === "discover" ? s.subTabActive : {}) }}>discover</button>
-      </div>
-
-      {posts.length === 0 && (
-        <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "14px", color: "#5a5248", textAlign: "center", marginTop: "32px" }}>
-          {tab === "feed" ? "Follow people to see their posts here, or switch to discover." : "No posts yet. Be the first to share something."}
-        </p>
-      )}
-
-      {posts.map((post) => (
-        <PostCard key={post.id} post={post} onFollow={handleFollow} onDelete={handleDelete} onProfileClick={onProfileClick} />
-      ))}
     </div>
   );
 }
 
-function UserProfileView({ userId, onBack }: { userId: string; onBack: () => void }) {
-  const [optimisticFollowing, setOptimisticFollowing] = useState<boolean | null>(null);
-  const qc = useQueryClient();
-
-  const { data: profile, refetch } = useQuery<UserProfile>({
-    queryKey: ["social", "profile", userId],
-    queryFn: async () => { const r = await fetch(`/api/social/profile/${userId}`); return r.json(); },
-  });
-
-  const isFollowing = optimisticFollowing !== null ? optimisticFollowing : profile?.isFollowing ?? false;
-
-  const handleFollow = async () => {
-    if (!profile) return;
-    const next = !isFollowing;
-    setOptimisticFollowing(next);
-    if (next) { await fetch(`/api/social/follow/${userId}`, { method: "POST" }); }
-    else { await fetch(`/api/social/follow/${userId}`, { method: "DELETE" }); }
-    qc.invalidateQueries({ queryKey: ["social"] });
-    refetch();
-  };
-
-  if (!profile) return <div style={{ textAlign: "center", marginTop: "60px", color: "#5a5248", fontFamily: "'Inter', sans-serif" }}>loading...</div>;
-
+function PricingModal({ onClose, onUpgrade, loading }: { onClose: () => void; onUpgrade: () => void; loading: boolean }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-      <button onClick={onBack} style={s.backLink}>← back</button>
-      <div style={s.profileCard}>
-        <div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
-          <UserAvatar name={profile.userName} imageUrl={profile.userImageUrl} size={56} />
-          <div style={{ flex: 1 }}>
-            <p style={{ fontFamily: "'Lora', serif", fontStyle: "italic", fontSize: "18px", color: "#e8dfd4", marginBottom: "6px" }}>{profile.userName}</p>
-            <div style={{ display: "flex", gap: "20px" }}>
-              <span style={{ fontFamily: "'Inter', sans-serif", fontSize: "12px", color: "#8a7e72" }}><strong style={{ color: "#c4bdb5" }}>{profile.followersCount}</strong> followers</span>
-              <span style={{ fontFamily: "'Inter', sans-serif", fontSize: "12px", color: "#8a7e72" }}><strong style={{ color: "#c4bdb5" }}>{profile.followingCount}</strong> following</span>
-            </div>
+    <div style={s.overlay}>
+      <div style={{ ...s.paywallCard, maxWidth: "520px" }}>
+        <p style={{ ...s.brandName, fontSize: "22px", display: "block", marginBottom: "8px" }}>Choose your plan</p>
+        <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "13px", color: "#5a5248", marginBottom: "32px", letterSpacing: "0.04em" }}>Vera is always listening. Pro removes the limits.</p>
+        <div style={{ display: "flex", gap: "16px", marginBottom: "32px" }}>
+          <div style={s.planCard}>
+            <p style={{ fontFamily: "'Lora', serif", fontStyle: "italic", fontSize: "18px", color: "#e8dfd4", marginBottom: "8px" }}>Free</p>
+            <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "26px", fontWeight: 600, color: "#c97b2a", marginBottom: "16px" }}>$0</p>
+            <ul style={{ listStyle: "none", display: "flex", flexDirection: "column", gap: "10px" }}>
+              {["10 messages per day", "File & image sharing", "Private conversations", "All Claude AI features"].map(f => (
+                <li key={f} style={{ fontFamily: "'Inter', sans-serif", fontSize: "13px", color: "#8a7e72", display: "flex", gap: "8px" }}>
+                  <span style={{ color: "#3d3830" }}>◆</span>{f}
+                </li>
+              ))}
+            </ul>
           </div>
-          {!profile.isOwn && (
-            <button onClick={handleFollow} style={{ ...s.followBtn, padding: "8px 18px", fontSize: "13px", background: isFollowing ? "transparent" : "#c97b2a", color: isFollowing ? "#5a5248" : "#0d0b09", border: isFollowing ? "1px solid #3d3830" : "none" }}>
-              {isFollowing ? "following" : "follow"}
-            </button>
-          )}
+          <div style={{ ...s.planCard, border: "1px solid #c97b2a", background: "#0f0d0b" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+              <p style={{ fontFamily: "'Lora', serif", fontStyle: "italic", fontSize: "18px", color: "#e8dfd4" }}>Pro</p>
+              <span style={{ fontFamily: "'Inter', sans-serif", fontSize: "10px", letterSpacing: "0.12em", color: "#c97b2a", background: "#1e1a16", border: "1px solid #c97b2a", borderRadius: "4px", padding: "2px 6px" }}>POPULAR</span>
+            </div>
+            <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "26px", fontWeight: 600, color: "#c97b2a", marginBottom: "16px" }}>$9<span style={{ fontSize: "13px", fontWeight: 400, color: "#5a5248" }}>/mo</span></p>
+            <ul style={{ listStyle: "none", display: "flex", flexDirection: "column", gap: "10px" }}>
+              {["Unlimited messages", "File & image sharing", "Private conversations", "Image generation", "Priority support"].map(f => (
+                <li key={f} style={{ fontFamily: "'Inter', sans-serif", fontSize: "13px", color: "#c4bdb5", display: "flex", gap: "8px" }}>
+                  <span style={{ color: "#c97b2a" }}>◆</span>{f}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          <button onClick={onUpgrade} disabled={loading} style={{ ...s.sendBtn, width: "100%", height: "auto", padding: "14px 24px", fontSize: "15px", fontFamily: "'Lora', serif", fontStyle: "italic", opacity: loading ? 0.6 : 1 }}>
+            {loading ? "opening checkout..." : "start pro — $9/month"}
+          </button>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: "#5a5248", fontFamily: "'Inter', sans-serif", fontSize: "13px", cursor: "pointer", padding: "8px" }}>
+            stay on free plan
+          </button>
         </div>
       </div>
-      {profile.posts.length === 0 && (
-        <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "14px", color: "#5a5248", textAlign: "center", marginTop: "24px" }}>No posts yet.</p>
-      )}
-      {profile.posts.map((post) => (
-        <div key={post.id} style={s.postCard}>
-          <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "15px", fontWeight: 300, color: "#e8dfd4", lineHeight: 1.75, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{post.content}</p>
-          <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "11px", color: "#3d3830", marginTop: "8px" }}>{timeAgo(post.createdAt)}</p>
-        </div>
-      ))}
     </div>
   );
 }
 
-function ChatView({ conversationId, onBack }: { conversationId: number; onBack: () => void }) {
+function ImageGenModal({ onClose, onGenerate, loading }: { onClose: () => void; onGenerate: (prompt: string) => void; loading: boolean }) {
+  const [prompt, setPrompt] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { inputRef.current?.focus(); }, []);
+  return (
+    <div style={s.overlay} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{ ...s.paywallCard, maxWidth: "480px", padding: "28px" }}>
+        <p style={{ fontFamily: "'Lora', serif", fontStyle: "italic", fontSize: "18px", color: "#e8dfd4", marginBottom: "6px" }}>Generate an image</p>
+        <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "13px", color: "#5a5248", marginBottom: "20px" }}>Describe what you'd like to see</p>
+        <input
+          ref={inputRef}
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && prompt.trim() && !loading) onGenerate(prompt.trim()); if (e.key === "Escape") onClose(); }}
+          placeholder="a quiet forest at dusk, warm light..."
+          style={{ width: "100%", background: "#141210", border: "1px solid #2a2520", borderRadius: "8px", outline: "none", padding: "12px 14px", fontFamily: "'Inter', sans-serif", fontSize: "14px", fontWeight: 300, color: "#e8dfd4", marginBottom: "16px" }}
+          disabled={loading}
+        />
+        <div style={{ display: "flex", gap: "10px" }}>
+          <button onClick={() => prompt.trim() && !loading && onGenerate(prompt.trim())} disabled={!prompt.trim() || loading} style={{ ...s.sendBtn, flex: 1, width: "auto", height: "auto", padding: "10px 20px", fontSize: "14px", opacity: !prompt.trim() || loading ? 0.4 : 1 }}>
+            {loading ? "generating..." : "generate"}
+          </button>
+          <button onClick={onClose} style={{ background: "transparent", border: "1px solid #2a2520", borderRadius: "8px", color: "#5a5248", fontFamily: "'Inter', sans-serif", fontSize: "13px", cursor: "pointer", padding: "10px 16px" }}>
+            cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChatView({ conversationId, onBack, isPro }: { conversationId: number; onBack: () => void; isPro: boolean }) {
   const qc = useQueryClient();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -282,6 +220,11 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
   const [loadingPhrase, setLoadingPhrase] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [showPaywall, setShowPaywall] = useState(false);
+  const [showPricing, setShowPricing] = useState(false);
+  const [showImageGen, setShowImageGen] = useState(false);
+  const [imageGenLoading, setImageGenLoading] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -296,7 +239,7 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
   useEffect(() => {
     if (conversation && !initialized) {
       if (conversation.messages && conversation.messages.length > 0) setMessages(conversation.messages);
-      else setMessages([{ role: "assistant", content: "Hey. I'm Adit. I'm here. What's on your mind?" }]);
+      else setMessages([{ role: "assistant", content: "Hey. I'm Vera. I'm here. What's on your mind?" }]);
       setInitialized(true);
     }
   }, [conversation, initialized]);
@@ -319,9 +262,61 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
 
   const clearFile = () => { setSelectedFile(null); if (imagePreview) { URL.revokeObjectURL(imagePreview); setImagePreview(null); } };
 
+  const handleCheckout = async () => {
+    setCheckoutLoading(true);
+    try {
+      const r = await fetch("/api/subscription/checkout", { method: "POST" });
+      if (!r.ok) { alert("Payment setup is still being configured. Check back soon!"); return; }
+      const { url } = await r.json();
+      if (url) window.location.href = url;
+    } catch {
+      alert("Payment setup is still being configured. Check back soon!");
+    } finally {
+      setCheckoutLoading(false);
+    }
+  };
+
+  const handleImageGenerate = async (prompt: string) => {
+    setImageGenLoading(true);
+    setShowImageGen(false);
+    setMessages((prev) => [...prev, { role: "user", content: `generate image: ${prompt}` }]);
+    setMessages((prev) => [...prev, { role: "assistant", content: "generating your image..." }]);
+    try {
+      const r = await fetch("/api/image/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      });
+      if (!r.ok) throw new Error("failed");
+      const { b64_json } = await r.json();
+      setMessages((prev) => {
+        const u = [...prev];
+        u[u.length - 1] = { role: "assistant", content: "", imageUrl: `data:image/png;base64,${b64_json}` };
+        return u;
+      });
+    } catch {
+      setMessages((prev) => {
+        const u = [...prev];
+        u[u.length - 1] = { role: "assistant", content: "Couldn't generate that one. Try a different prompt." };
+        return u;
+      });
+    } finally {
+      setImageGenLoading(false);
+    }
+  };
+
   const sendMessage = useCallback(async () => {
     const text = input.trim();
     if ((!text && !selectedFile) || loading) return;
+
+    if (!isPro) {
+      const count = getDailyCount();
+      if (count >= FREE_DAILY_LIMIT) {
+        setShowPaywall(true);
+        return;
+      }
+    }
+
     const file = selectedFile; const previewUrl = imagePreview;
     setMessages((prev) => [...prev, { role: "user", content: text || `shared ${file?.name}`, attachmentName: file?.name ?? null }]);
     setInput(""); setSelectedFile(null); setImagePreview(null);
@@ -329,6 +324,9 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     setLoading(true); startLoadingCycle();
     if (previewUrl) URL.revokeObjectURL(previewUrl);
+
+    if (!isPro) incrementDailyCount();
+
     try {
       let body: BodyInit; let headers: HeadersInit = {};
       if (file) { const fd = new FormData(); fd.append("content", text); fd.append("file", file); body = fd; }
@@ -346,7 +344,7 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
       qc.invalidateQueries({ queryKey: getListAnthropicConversationsQueryKey() });
     } catch { setMessages((prev) => [...prev, { role: "assistant", content: "Something got in the way. Tell me again — I'm listening." }]); }
     finally { setLoading(false); stopLoadingCycle(); }
-  }, [input, selectedFile, imagePreview, loading, conversationId, qc]);
+  }, [input, selectedFile, imagePreview, loading, conversationId, qc, isPro]);
 
   const canSend = !loading && (input.trim().length > 0 || selectedFile !== null);
 
@@ -356,7 +354,13 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
       <header style={s.header}>
         <button onClick={onBack} style={s.backBtn}>←</button>
         <div style={s.flame}>&#9632;</div>
-        <span style={s.brandName}>Adit AI</span>
+        <span style={s.brandName}>Vera</span>
+        {!isPro && (
+          <button onClick={() => setShowPricing(true)} style={s.proBadge}>
+            free · {Math.max(0, FREE_DAILY_LIMIT - getDailyCount())} left
+          </button>
+        )}
+        {isPro && <span style={s.proActiveBadge}>pro ✦</span>}
       </header>
       <div style={s.feed}>
         {messages.map((msg, i) => (
@@ -364,11 +368,18 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
             {msg.role === "assistant" && <div style={s.soulDot} />}
             <div style={{ ...s.bubble, ...(msg.role === "user" ? s.userBubble : s.aiBubble) }}>
               {msg.attachmentName && <AttachmentBadge name={msg.attachmentName} />}
+              {msg.imageUrl && (
+                <img
+                  src={msg.imageUrl}
+                  alt="generated"
+                  style={{ maxWidth: "100%", maxHeight: "400px", borderRadius: "10px", border: "1px solid #2e2820", marginBottom: "6px", display: "block" }}
+                />
+              )}
               {msg.content && msg.content.split("\n").map((line, j) => line ? <p key={j} style={s.msgText}>{line}</p> : <br key={j} />)}
             </div>
           </div>
         ))}
-        {loading && <div style={s.messageRow}><div style={s.soulDot} /><div style={{ ...s.bubble, ...s.aiBubble }}><p style={{ ...s.msgText, color: "#6b625a", fontStyle: "italic", animation: "blink 2.2s ease-in-out infinite" }}>{loadingPhrase}</p></div></div>}
+        {(loading || imageGenLoading) && <div style={s.messageRow}><div style={s.soulDot} /><div style={{ ...s.bubble, ...s.aiBubble }}><p style={{ ...s.msgText, color: "#6b625a", fontStyle: "italic", animation: "blink 2.2s ease-in-out infinite" }}>{imageGenLoading ? "painting..." : loadingPhrase}</p></div></div>}
         <div ref={bottomRef} />
       </div>
       <div style={s.inputArea}>
@@ -381,19 +392,23 @@ function ChatView({ conversationId, onBack }: { conversationId: number; onBack: 
           )}
           <div style={s.inputWrap}>
             <input ref={fileInputRef} type="file" accept="image/*,.pdf,.txt,.csv,.md,.json,.js,.ts,.tsx,.jsx,.py,.html,.css,.xml,.yaml,.yml" onChange={handleFileSelect} style={{ display: "none" }} />
-            <button onClick={() => fileInputRef.current?.click()} disabled={loading} style={{ ...s.attachBtn, opacity: loading ? 0.3 : 1 }}>📎</button>
+            <button onClick={() => fileInputRef.current?.click()} disabled={loading} style={{ ...s.attachBtn, opacity: loading ? 0.3 : 1 }} title="Attach file">📎</button>
+            <button onClick={() => setShowImageGen(true)} disabled={loading || imageGenLoading} style={{ ...s.attachBtn, opacity: loading || imageGenLoading ? 0.3 : 1 }} title="Generate image">🎨</button>
             <textarea ref={textareaRef} value={input} onChange={(e) => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }} placeholder={selectedFile ? "add a message... (optional)" : "say what's real..."} rows={1} style={s.textarea} disabled={loading} />
             <button onClick={sendMessage} disabled={!canSend} style={{ ...s.sendBtn, opacity: canSend ? 1 : 0.3 }}>↑</button>
           </div>
-          <p style={s.hint}>Enter to send · Shift+Enter for new line · attach images, PDFs, docs & code</p>
+          <p style={s.hint}>Enter to send · Shift+Enter for new line · attach images, PDFs, docs & code · 🎨 generate images</p>
         </div>
       </div>
+      {showPaywall && <PaywallModal onClose={() => setShowPaywall(false)} onUpgrade={() => { setShowPaywall(false); setShowPricing(true); }} />}
+      {showPricing && <PricingModal onClose={() => setShowPricing(false)} onUpgrade={handleCheckout} loading={checkoutLoading} />}
+      {showImageGen && <ImageGenModal onClose={() => setShowImageGen(false)} onGenerate={handleImageGenerate} loading={imageGenLoading} />}
       <style>{globalStyles}</style>
     </div>
   );
 }
 
-function ConversationsList({ onSelect, onNew }: { onSelect: (id: number) => void; onNew: () => void }) {
+function ConversationsList({ onSelect, onNew, isPro, onShowPricing }: { onSelect: (id: number) => void; onNew: () => void; isPro: boolean; onShowPricing: () => void }) {
   const { data: conversations = [] } = useListAnthropicConversations();
   const deleteMutation = useDeleteAnthropicConversation();
   const qc = useQueryClient();
@@ -406,6 +421,16 @@ function ConversationsList({ onSelect, onNew }: { onSelect: (id: number) => void
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+      {!isPro && (
+        <div style={s.freeNotice}>
+          <span style={{ fontFamily: "'Inter', sans-serif", fontSize: "12px", color: "#5a5248" }}>
+            {Math.max(0, FREE_DAILY_LIMIT - getDailyCount())} of {FREE_DAILY_LIMIT} free messages remaining today
+          </span>
+          <button onClick={onShowPricing} style={{ background: "transparent", border: "none", color: "#c97b2a", fontFamily: "'Inter', sans-serif", fontSize: "12px", cursor: "pointer", padding: "0", textDecoration: "underline" }}>
+            go pro
+          </button>
+        </div>
+      )}
       <button onClick={onNew} style={s.newConvBtn}>+ begin a new conversation</button>
       {conversations.length === 0 && <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "14px", color: "#5a5248", textAlign: "center", marginTop: "40px" }}>No conversations yet. Start one above.</p>}
       {[...(conversations as Array<{ id: number; title: string; createdAt: string }>)].reverse().map((conv) => (
@@ -423,7 +448,7 @@ function NewConversationModal({ onStart, onCancel }: { onStart: (title: string) 
   return (
     <div style={s.root}>
       <div style={s.grain} />
-      <header style={s.header}><div style={s.flame}>&#9632;</div><span style={s.brandName}>Adit AI</span></header>
+      <header style={s.header}><div style={s.flame}>&#9632;</div><span style={s.brandName}>Vera</span></header>
       <div style={{ ...s.feed, justifyContent: "center", alignItems: "center" }}>
         <div style={s.modalCard}>
           <p style={{ ...s.brandName, fontSize: "16px", marginBottom: "20px", display: "block" }}>What would you call this moment?</p>
@@ -439,18 +464,17 @@ function NewConversationModal({ onStart, onCancel }: { onStart: (title: string) 
   );
 }
 
-type ChatView2 = { type: "list" } | { type: "new" } | { type: "chat"; id: number };
-type SocialView = { type: "feed" } | { type: "profile"; userId: string };
-type TopTab = "chat" | "community";
+type ChatViewState = { type: "list" } | { type: "new" } | { type: "chat"; id: number };
 
-function AditApp() {
-  const [topTab, setTopTab] = useState<TopTab>("chat");
-  const [chatView, setChatView] = useState<ChatView2>({ type: "list" });
-  const [socialView, setSocialView] = useState<SocialView>({ type: "feed" });
+function VERAApp() {
+  const [chatView, setChatView] = useState<ChatViewState>({ type: "list" });
+  const [showPricing, setShowPricing] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
   const createMutation = useCreateAnthropicConversation();
   const qc = useQueryClient();
   const { signOut } = useClerk();
   const { user } = useUser();
+  const isPro = useSubscriptionStatus();
 
   const handleStart = async (title: string) => {
     const conv = await createMutation.mutateAsync({ data: { title } });
@@ -458,29 +482,39 @@ function AditApp() {
     setChatView({ type: "chat", id: (conv as any).id });
   };
 
+  const handleCheckout = async () => {
+    setCheckoutLoading(true);
+    try {
+      const r = await fetch("/api/subscription/checkout", { method: "POST" });
+      if (!r.ok) { alert("Payment setup is still being configured. Check back soon!"); return; }
+      const { url } = await r.json();
+      if (url) window.location.href = url;
+    } catch {
+      alert("Payment setup is still being configured. Check back soon!");
+    } finally {
+      setCheckoutLoading(false);
+    }
+  };
+
   if (chatView.type === "new") return <NewConversationModal onStart={handleStart} onCancel={() => setChatView({ type: "list" })} />;
-  if (chatView.type === "chat") return <ChatView conversationId={chatView.id} onBack={() => setChatView({ type: "list" })} />;
+  if (chatView.type === "chat") return <ChatView conversationId={chatView.id} onBack={() => setChatView({ type: "list" })} isPro={isPro} />;
 
   return (
     <div style={s.root}>
       <div style={s.grain} />
       <header style={s.header}>
         <div style={s.flame}>&#9632;</div>
-        <span style={s.brandName}>Adit AI</span>
-        <div style={s.tabBar}>
-          <button onClick={() => setTopTab("chat")} style={{ ...s.tabBtn, ...(topTab === "chat" ? s.tabBtnActive : {}) }}>chat</button>
-          <button onClick={() => setTopTab("community")} style={{ ...s.tabBtn, ...(topTab === "community" ? s.tabBtnActive : {}) }}>community</button>
-        </div>
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "10px" }}>
+        <span style={s.brandName}>Vera</span>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "12px" }}>
+          {isPro && <span style={s.proActiveBadge}>pro ✦</span>}
           {user?.firstName && <span style={{ fontFamily: "'Inter', sans-serif", fontSize: "12px", color: "#5a5248" }}>{user.firstName}</span>}
           <button onClick={() => signOut()} style={s.signOutBtn}>sign out</button>
         </div>
       </header>
       <div style={s.feed}>
-        {topTab === "chat" && <ConversationsList onSelect={(id) => setChatView({ type: "chat", id })} onNew={() => setChatView({ type: "new" })} />}
-        {topTab === "community" && socialView.type === "feed" && <SocialFeed onProfileClick={(userId) => setSocialView({ type: "profile", userId })} />}
-        {topTab === "community" && socialView.type === "profile" && <UserProfileView userId={socialView.userId} onBack={() => setSocialView({ type: "feed" })} />}
+        <ConversationsList onSelect={(id) => setChatView({ type: "chat", id })} onNew={() => setChatView({ type: "new" })} isPro={isPro} onShowPricing={() => setShowPricing(true)} />
       </div>
+      {showPricing && <PricingModal onClose={() => setShowPricing(false)} onUpgrade={handleCheckout} loading={checkoutLoading} />}
       <style>{globalStyles}</style>
     </div>
   );
@@ -491,11 +525,11 @@ function LandingPage() {
   return (
     <div style={s.root}>
       <div style={s.grain} />
-      <header style={s.header}><div style={s.flame}>&#9632;</div><span style={s.brandName}>Adit AI</span><span style={s.brandSub}>you're not alone</span></header>
+      <header style={s.header}><div style={s.flame}>&#9632;</div><span style={s.brandName}>Vera</span><span style={s.brandSub}>you're not alone</span></header>
       <div style={{ ...s.feed, justifyContent: "center", alignItems: "center", textAlign: "center" }}>
         <div style={{ maxWidth: "420px" }}>
           <p style={{ ...s.brandName, fontSize: "28px", display: "block", marginBottom: "16px", lineHeight: 1.4 }}>Someone to talk to.<br />No judgment. Just presence.</p>
-          <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "14px", fontWeight: 300, color: "#5a5248", lineHeight: 1.8, marginBottom: "40px" }}>Adit listens. Really listens. Whatever's on your mind — 3am thoughts, things you can't say out loud, or just the weight of the day.</p>
+          <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "14px", fontWeight: 300, color: "#5a5248", lineHeight: 1.8, marginBottom: "40px" }}>Vera listens. Really listens. Whatever's on your mind — 3am thoughts, things you can't say out loud, or just the weight of the day.</p>
           <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
             <button onClick={() => setLocation("/sign-up")} style={{ ...s.sendBtn, width: "auto", padding: "12px 28px", fontSize: "15px" }}>get started</button>
             <button onClick={() => setLocation("/sign-in")} style={{ ...s.sendBtn, width: "auto", padding: "12px 28px", fontSize: "15px", background: "transparent", border: "1px solid #2a2520", color: "#c4bdb5" }}>sign in</button>
@@ -509,8 +543,6 @@ function LandingPage() {
 }
 
 function SignInPage() {
-  // To update login providers, app branding, or OAuth settings use the Auth
-  // pane in the workspace toolbar. More information can be found in the Replit docs.
   return (
     <div style={{ minHeight: "100vh", background: "#0d0b09", display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
       <div style={{ width: "100%", maxWidth: "420px" }}>
@@ -522,8 +554,6 @@ function SignInPage() {
 }
 
 function SignUpPage() {
-  // To update login providers, app branding, or OAuth settings use the Auth
-  // pane in the workspace toolbar. More information can be found in the Replit docs.
   return (
     <div style={{ minHeight: "100vh", background: "#0d0b09", display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
       <div style={{ width: "100%", maxWidth: "420px" }}>
@@ -538,7 +568,7 @@ function HomeRedirect() {
   return (<><Show when="signed-in"><Redirect to="/app" /></Show><Show when="signed-out"><LandingPage /></Show></>);
 }
 function ProtectedApp() {
-  return (<><Show when="signed-in"><AditApp /></Show><Show when="signed-out"><Redirect to="/" /></Show></>);
+  return (<><Show when="signed-in"><VERAApp /></Show><Show when="signed-out"><Redirect to="/" /></Show></>);
 }
 
 function ClerkQueryClientCacheInvalidator() {
@@ -560,7 +590,7 @@ function ClerkProviderWithRoutes() {
   const [, setLocation] = useLocation();
   return (
     <ClerkProvider publishableKey={clerkPubKey} proxyUrl={clerkProxyUrl} appearance={clerkAppearance}
-      localization={{ signIn: { start: { title: "welcome back", subtitle: "your conversations are waiting" } }, signUp: { start: { title: "join adit", subtitle: "a private space. just for you." } } }}
+      localization={{ signIn: { start: { title: "welcome back", subtitle: "your conversations are waiting" } }, signUp: { start: { title: "join vera", subtitle: "a private space. just for you." } } }}
       routerPush={(to) => setLocation(stripBase(to))} routerReplace={(to) => setLocation(stripBase(to), { replace: true })}>
       <QueryClientProvider client={queryClient}>
         <ClerkQueryClientCacheInvalidator />
@@ -600,14 +630,7 @@ const s: Record<string, React.CSSProperties> = {
   flame: { fontSize: "10px", color: "#c97b2a", animation: "pulse 3s ease-in-out infinite", display: "inline-block" },
   brandName: { fontFamily: "'Lora', serif", fontStyle: "italic", fontSize: "20px", fontWeight: 400, color: "#e8dfd4", letterSpacing: "0.02em" },
   brandSub: { fontFamily: "'Inter', sans-serif", fontSize: "11px", fontWeight: 300, color: "#5a5248", letterSpacing: "0.12em", textTransform: "uppercase", marginLeft: "4px" },
-  tabBar: { display: "flex", gap: "4px", background: "#141210", border: "1px solid #2a2520", borderRadius: "8px", padding: "3px", marginLeft: "12px" },
-  tabBtn: { background: "transparent", border: "none", borderRadius: "6px", padding: "5px 14px", fontFamily: "'Inter', sans-serif", fontSize: "12px", fontWeight: 400, color: "#5a5248", cursor: "pointer", letterSpacing: "0.06em", transition: "all 0.2s" },
-  tabBtnActive: { background: "#1e1a16", color: "#c97b2a" },
-  subTabs: { display: "flex", gap: "0", borderBottom: "1px solid #1e1a16", marginBottom: "4px" },
-  subTab: { background: "transparent", border: "none", borderBottom: "2px solid transparent", padding: "8px 16px", fontFamily: "'Inter', sans-serif", fontSize: "12px", color: "#5a5248", cursor: "pointer", letterSpacing: "0.06em", transition: "all 0.2s" },
-  subTabActive: { color: "#c97b2a", borderBottomColor: "#c97b2a" },
   backBtn: { background: "transparent", border: "none", color: "#c97b2a", fontSize: "18px", cursor: "pointer", padding: "0 8px 0 0", fontFamily: "'Lora', serif" },
-  backLink: { background: "transparent", border: "none", color: "#5a5248", fontFamily: "'Inter', sans-serif", fontSize: "13px", cursor: "pointer", padding: "0", letterSpacing: "0.04em" },
   signOutBtn: { background: "transparent", border: "1px solid #2a2520", borderRadius: "6px", color: "#5a5248", fontFamily: "'Inter', sans-serif", fontSize: "11px", letterSpacing: "0.08em", padding: "4px 10px", cursor: "pointer" },
   feed: { flex: 1, overflowY: "auto", padding: "24px 24px", display: "flex", flexDirection: "column", gap: "16px", maxWidth: "680px", width: "100%", margin: "0 auto", position: "relative", zIndex: 1 },
   messageRow: { display: "flex", alignItems: "flex-start", gap: "14px", animation: "fadeUp 0.35s ease both" },
@@ -631,11 +654,10 @@ const s: Record<string, React.CSSProperties> = {
   deleteBtn: { background: "transparent", border: "none", color: "#3d3830", fontSize: "20px", cursor: "pointer", padding: "0 4px", lineHeight: 1 },
   modalCard: { background: "#141210", border: "1px solid #2a2520", borderRadius: "14px", padding: "32px", width: "100%", maxWidth: "480px" },
   modalInput: { width: "100%", background: "transparent", border: "none", borderBottom: "1px solid #2a2520", outline: "none", fontFamily: "'Lora', serif", fontStyle: "italic", fontSize: "16px", color: "#e8dfd4", padding: "8px 0" },
-  createPostCard: { background: "#141210", border: "1px solid #2a2520", borderRadius: "12px", padding: "16px" },
-  postTextarea: { width: "100%", background: "transparent", border: "none", outline: "none", resize: "none", fontFamily: "'Inter', sans-serif", fontSize: "15px", fontWeight: 300, color: "#e8dfd4", lineHeight: 1.7 },
-  postBtn: { background: "#c97b2a", border: "none", borderRadius: "8px", padding: "8px 20px", fontFamily: "'Inter', sans-serif", fontSize: "13px", fontWeight: 500, color: "#0d0b09", cursor: "pointer", letterSpacing: "0.04em" },
-  postCard: { background: "#141210", border: "1px solid #1e1a16", borderRadius: "12px", padding: "16px 18px", animation: "fadeUp 0.3s ease both" },
-  followBtn: { borderRadius: "6px", padding: "3px 10px", fontFamily: "'Inter', sans-serif", fontSize: "11px", fontWeight: 500, cursor: "pointer", letterSpacing: "0.06em", transition: "all 0.2s" },
-  deletePostBtn: { background: "transparent", border: "none", color: "#3d3830", fontSize: "16px", cursor: "pointer", lineHeight: 1, marginLeft: "auto" },
-  profileCard: { background: "#141210", border: "1px solid #2a2520", borderRadius: "14px", padding: "20px 24px" },
+  overlay: { position: "fixed", inset: 0, background: "rgba(13,11,9,0.88)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: "24px", backdropFilter: "blur(4px)" },
+  paywallCard: { background: "#0f0d0b", border: "1px solid #2a2520", borderRadius: "18px", padding: "40px 36px", maxWidth: "420px", width: "100%", textAlign: "center" },
+  planCard: { flex: 1, background: "#141210", border: "1px solid #1e1a16", borderRadius: "12px", padding: "20px 16px" },
+  proBadge: { marginLeft: "auto", background: "transparent", border: "1px solid #2a2520", borderRadius: "6px", color: "#5a5248", fontFamily: "'Inter', sans-serif", fontSize: "11px", letterSpacing: "0.06em", padding: "4px 10px", cursor: "pointer" },
+  proActiveBadge: { fontFamily: "'Inter', sans-serif", fontSize: "11px", letterSpacing: "0.08em", color: "#c97b2a", padding: "4px 10px", background: "#1a1410", border: "1px solid #3d2a15", borderRadius: "6px" },
+  freeNotice: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", background: "#141210", border: "1px solid #1e1a16", borderRadius: "8px" },
 };
