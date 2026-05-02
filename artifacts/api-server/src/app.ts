@@ -52,7 +52,12 @@ app.use(cors({ credentials: true, origin: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.use(clerkMiddleware());
+const authorizedParties = (process.env.REPLIT_DOMAINS ?? "")
+  .split(",")
+  .map((d) => d.trim())
+  .filter(Boolean);
+
+app.use(clerkMiddleware(authorizedParties.length ? { authorizedParties } : {}));
 
 app.use("/api", router);
 

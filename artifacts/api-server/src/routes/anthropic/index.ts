@@ -37,14 +37,18 @@ Rules for how you speak:
 When a user shares a file or image, engage with it naturally and thoughtfully — treat it like something they've chosen to share with you, not a task to complete.`;
 
 const requireAuth = (req: Request, res: Response, next: NextFunction) => {
-  const auth = getAuth(req);
-  const userId = auth?.userId;
-  if (!userId) {
+  try {
+    const auth = getAuth(req);
+    const userId = auth?.userId;
+    if (!userId) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    (req as any).userId = userId;
+    next();
+  } catch {
     res.status(401).json({ error: "Unauthorized" });
-    return;
   }
-  (req as any).userId = userId;
-  next();
 };
 
 const upload = multer({

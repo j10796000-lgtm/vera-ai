@@ -6,11 +6,15 @@ import { eq, sql } from "drizzle-orm";
 import { getUncachableStripeClient } from "../../stripeClient";
 
 const requireAuth = (req: Request, res: Response, next: NextFunction) => {
-  const auth = getAuth(req);
-  const userId = auth?.userId;
-  if (!userId) { res.status(401).json({ error: "Unauthorized" }); return; }
-  (req as any).userId = userId;
-  next();
+  try {
+    const auth = getAuth(req);
+    const userId = auth?.userId;
+    if (!userId) { res.status(401).json({ error: "Unauthorized" }); return; }
+    (req as any).userId = userId;
+    next();
+  } catch {
+    res.status(401).json({ error: "Unauthorized" });
+  }
 };
 
 async function getOrCreateUser(userId: string, email?: string) {
