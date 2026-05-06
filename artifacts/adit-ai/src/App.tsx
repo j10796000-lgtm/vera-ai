@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import MoodTracker from "./components/MoodTracker";
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser } from "@clerk/react";
 import { Switch, Route, useLocation, Router as WouterRouter, Redirect } from "wouter";
@@ -468,6 +469,7 @@ type ChatViewState = { type: "list" } | { type: "new" } | { type: "chat"; id: nu
 
 function VERAApp() {
   const [chatView, setChatView] = useState<ChatViewState>({ type: "list" });
+  const [activeTab, setActiveTab] = useState<"chat" | "mood">("chat");
   const [showPricing, setShowPricing] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const createMutation = useCreateAnthropicConversation();
@@ -505,15 +507,39 @@ function VERAApp() {
       <header style={s.header}>
         <div style={s.flame}>&#9632;</div>
         <span style={s.brandName}>Vera</span>
+        <nav style={{ display: "flex", gap: "4px", marginLeft: "24px" }}>
+          <button
+            onClick={() => setActiveTab("chat")}
+            style={{
+              ...s.navTab,
+              ...(activeTab === "chat" ? s.navTabActive : {}),
+            }}
+          >
+            chat
+          </button>
+          <button
+            onClick={() => setActiveTab("mood")}
+            style={{
+              ...s.navTab,
+              ...(activeTab === "mood" ? s.navTabActive : {}),
+            }}
+          >
+            mood
+          </button>
+        </nav>
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "12px" }}>
           {isPro && <span style={s.proActiveBadge}>pro ✦</span>}
           {user?.firstName && <span style={{ fontFamily: "'Inter', sans-serif", fontSize: "12px", color: "#5a5248" }}>{user.firstName}</span>}
           <button onClick={() => signOut()} style={s.signOutBtn}>sign out</button>
         </div>
       </header>
-      <div style={s.feed}>
-        <ConversationsList onSelect={(id) => setChatView({ type: "chat", id })} onNew={() => setChatView({ type: "new" })} isPro={isPro} onShowPricing={() => setShowPricing(true)} />
-      </div>
+      {activeTab === "chat" ? (
+        <div style={s.feed}>
+          <ConversationsList onSelect={(id) => setChatView({ type: "chat", id })} onNew={() => setChatView({ type: "new" })} isPro={isPro} onShowPricing={() => setShowPricing(true)} />
+        </div>
+      ) : (
+        <MoodTracker />
+      )}
       {showPricing && <PricingModal onClose={() => setShowPricing(false)} onUpgrade={handleCheckout} loading={checkoutLoading} />}
       <style>{globalStyles}</style>
     </div>
@@ -632,6 +658,8 @@ const s: Record<string, React.CSSProperties> = {
   brandSub: { fontFamily: "'Inter', sans-serif", fontSize: "11px", fontWeight: 300, color: "#5a5248", letterSpacing: "0.12em", textTransform: "uppercase", marginLeft: "4px" },
   backBtn: { background: "transparent", border: "none", color: "#c97b2a", fontSize: "18px", cursor: "pointer", padding: "0 8px 0 0", fontFamily: "'Lora', serif" },
   signOutBtn: { background: "transparent", border: "1px solid #2a2520", borderRadius: "6px", color: "#5a5248", fontFamily: "'Inter', sans-serif", fontSize: "11px", letterSpacing: "0.08em", padding: "4px 10px", cursor: "pointer" },
+  navTab: { background: "transparent", border: "1px solid transparent", borderRadius: "6px", color: "#5a5248", fontFamily: "'DM Sans', sans-serif", fontSize: "13px", letterSpacing: "0.06em", padding: "5px 14px", cursor: "pointer", transition: "all 0.2s" },
+  navTabActive: { background: "#141210", border: "1px solid #2a2520", color: "#c4bdb5" },
   feed: { flex: 1, overflowY: "auto", padding: "24px 24px", display: "flex", flexDirection: "column", gap: "16px", maxWidth: "680px", width: "100%", margin: "0 auto", position: "relative", zIndex: 1 },
   messageRow: { display: "flex", alignItems: "flex-start", gap: "14px", animation: "fadeUp 0.35s ease both" },
   userRow: { flexDirection: "row-reverse" },
