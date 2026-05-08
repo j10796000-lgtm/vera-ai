@@ -213,9 +213,18 @@ function ImageGenModal({ onClose, onGenerate, loading }: { onClose: () => void; 
   );
 }
 
-function ChatView({ conversationId, onBack, isPro }: { conversationId: number; onBack: () => void; isPro: boolean }) {
+function ChatView({ conversationId, onBack, onNew, isPro }: { conversationId: number; onBack: () => void; onNew: () => void; isPro: boolean }) {
   const qc = useQueryClient();
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>(() => {
+    try {
+      const saved = localStorage.getItem(`vera_chat_${conversationId}`);
+      if (!saved) return [];
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) && parsed.length > 0 ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadingPhrase, setLoadingPhrase] = useState("");
@@ -224,6 +233,7 @@ function ChatView({ conversationId, onBack, isPro }: { conversationId: number; o
   const [showPaywall, setShowPaywall] = useState(false);
   const [showPricing, setShowPricing] = useState(false);
   const [showImageGen, setShowImageGen] = useState(false);
+  const [showPastChats, setShowPastChats] = useState(false);
   const [imageGenLoading, setImageGenLoading] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -239,11 +249,22 @@ function ChatView({ conversationId, onBack, isPro }: { conversationId: number; o
 
   useEffect(() => {
     if (conversation && !initialized) {
-      if (conversation.messages && conversation.messages.length > 0) setMessages(conversation.messages);
-      else setMessages([{ role: "assistant", content: "Hey. I'm Vera. I'm here. What's on your mind?" }]);
+      if (conversation.messages && conversation.messages.length > 0) {
+        setMessages(conversation.messages);
+      } else if (messages.length === 0) {
+        setMessages([{ role: "assistant", content: "Hey. I'm Vera. I'm here. What's on your mind?" }]);
+      }
       setInitialized(true);
     }
   }, [conversation, initialized]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(`vera_chat_${conversationId}`, JSON.stringify(messages));
+    } catch (e) {
+      console.error("Failed to save chat history:", e);
+    }
+  }, [messages, conversationId]);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
 
@@ -274,6 +295,15 @@ function ChatView({ conversationId, onBack, isPro }: { conversationId: number; o
       alert("Payment setup is still being configured. Check back soon!");
     } finally {
       setCheckoutLoading(false);
+    }
+  };
+
+  const { data: allConversations = [] } = useListAnthropicConversations();
+
+  const handleNewChat = () => {
+    if (window.confirm("Start a new conversation? Your current chat will be saved separately.")) {
+      onBack();
+      onNew();
     }
   };
 
@@ -356,12 +386,16 @@ function ChatView({ conversationId, onBack, isPro }: { conversationId: number; o
         <button onClick={onBack} style={s.backBtn}>←</button>
         <div style={s.flame}>&#9632;</div>
         <span style={s.brandName}>Vera</span>
-        {!isPro && (
-          <button onClick={() => setShowPricing(true)} style={s.proBadge}>
-            free · {Math.max(0, FREE_DAILY_LIMIT - getDailyCount())} left
-          </button>
-        )}
-        {isPro && <span style={s.proActiveBadge}>pro ✦</span>}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+          {!isPro && (
+            <button onClick={() => setShowPricing(true)} style={s.proBadge}>
+              free · {Math.max(0, FREE_DAILY_LIMIT - getDailyCount())} left
+            </button>
+          )}
+          {isPro && <span style={s.proActiveBadge}>pro ✦</span>}
+          <button onClick={() => setShowPastChats(true)} style={s.iconBtn} title="Past conversations">☰</button>
+          <button onClick={handleNewChat} style={s.iconBtn} title="New chat">✦ new</button>
+        </div>
       </header>
       <div style={s.feed}>
         {messages.map((msg, i) => (
@@ -404,6 +438,41 @@ function ChatView({ conversationId, onBack, isPro }: { conversationId: number; o
       {showPaywall && <PaywallModal onClose={() => setShowPaywall(false)} onUpgrade={() => { setShowPaywall(false); setShowPricing(true); }} />}
       {showPricing && <PricingModal onClose={() => setShowPricing(false)} onUpgrade={handleCheckout} loading={checkoutLoading} />}
       {showImageGen && <ImageGenModal onClose={() => setShowImageGen(false)} onGenerate={handleImageGenerate} loading={imageGenLoading} />}
+
+      {showPastChats && (
+        <div style={s.sidebarOverlay} onClick={() => setShowPastChats(false)}>
+          <div style={s.sidebar} onClick={(e) => e.stopPropagation()}>
+            <div style={s.sidebarHeader}>
+              <span style={{ fontFamily: "'Lora', serif", fontStyle: "italic", fontSize: "16px", color: "#c4bdb5" }}>conversations</span>
+              <button onClick={() => setShowPastChats(false)} style={s.sidebarClose}>×</button>
+            </div>
+            <button onClick={() => { setShowPastChats(false); handleNewChat(); }} style={s.sidebarNewBtn}>✦ new conversation</button>
+            <div style={s.sidebarList}>
+              {(allConversations as Array<{ id: number; title: string; createdAt: string }>).length === 0 && (
+                <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "13px", color: "#3d3830", padding: "16px 0", textAlign: "center" }}>no past conversations</p>
+              )}
+              {[...(allConversations as Array<{ id: number; title: string; createdAt: string }>)].reverse().map((conv) => {
+                const isActive = conv.id === conversationId;
+                const cachedMsgs: Message[] = (() => { try { const d = localStorage.getItem(`vera_chat_${conv.id}`); return d ? JSON.parse(d) : []; } catch { return []; } })();
+                const preview = cachedMsgs.find((m) => m.role === "user")?.content ?? "—";
+                return (
+                  <div
+                    key={conv.id}
+                    style={{ ...s.sidebarItem, ...(isActive ? s.sidebarItemActive : {}) }}
+                    onClick={() => { setShowPastChats(false); if (!isActive) { onBack(); setTimeout(() => { /* VERAApp will handle navigation via onSelect */ }, 0); } }}
+                  >
+                    <p style={{ fontFamily: "'Lora', serif", fontStyle: "italic", fontSize: "14px", color: isActive ? "#c97b2a" : "#c4bdb5", marginBottom: "4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{conv.title}</p>
+                    <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "11px", color: "#5a5248", marginBottom: "4px" }}>{new Date(conv.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</p>
+                    {preview !== "—" && <p style={{ fontFamily: "'Inter', sans-serif", fontSize: "12px", color: "#3d3830", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>"{preview.slice(0, 60)}{preview.length > 60 ? "…" : ""}"</p>}
+                    {!isActive && <button onClick={(e) => { e.stopPropagation(); setShowPastChats(false); onBack(); }} style={{ marginTop: "8px", background: "transparent", border: "1px solid #2a2520", borderRadius: "5px", color: "#5a5248", fontFamily: "'Inter', sans-serif", fontSize: "11px", padding: "3px 10px", cursor: "pointer", letterSpacing: "0.06em" }}>view →</button>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       <style>{globalStyles}</style>
     </div>
   );
@@ -499,7 +568,7 @@ function VERAApp() {
   };
 
   if (chatView.type === "new") return <NewConversationModal onStart={handleStart} onCancel={() => setChatView({ type: "list" })} />;
-  if (chatView.type === "chat") return <ChatView conversationId={chatView.id} onBack={() => setChatView({ type: "list" })} isPro={isPro} />;
+  if (chatView.type === "chat") return <ChatView conversationId={chatView.id} onBack={() => setChatView({ type: "list" })} onNew={() => setChatView({ type: "new" })} isPro={isPro} />;
 
   return (
     <div style={s.root}>
@@ -685,7 +754,16 @@ const s: Record<string, React.CSSProperties> = {
   overlay: { position: "fixed", inset: 0, background: "rgba(13,11,9,0.88)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: "24px", backdropFilter: "blur(4px)" },
   paywallCard: { background: "#0f0d0b", border: "1px solid #2a2520", borderRadius: "18px", padding: "40px 36px", maxWidth: "420px", width: "100%", textAlign: "center" },
   planCard: { flex: 1, background: "#141210", border: "1px solid #1e1a16", borderRadius: "12px", padding: "20px 16px" },
-  proBadge: { marginLeft: "auto", background: "transparent", border: "1px solid #2a2520", borderRadius: "6px", color: "#5a5248", fontFamily: "'Inter', sans-serif", fontSize: "11px", letterSpacing: "0.06em", padding: "4px 10px", cursor: "pointer" },
+  proBadge: { background: "transparent", border: "1px solid #2a2520", borderRadius: "6px", color: "#5a5248", fontFamily: "'Inter', sans-serif", fontSize: "11px", letterSpacing: "0.06em", padding: "4px 10px", cursor: "pointer" },
+  iconBtn: { background: "transparent", border: "1px solid #2a2520", borderRadius: "6px", color: "#5a5248", fontFamily: "'Inter', sans-serif", fontSize: "11px", letterSpacing: "0.06em", padding: "4px 10px", cursor: "pointer" },
+  sidebarOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 200, display: "flex", justifyContent: "flex-end" } as React.CSSProperties,
+  sidebar: { width: "300px", background: "#0d0b09", borderLeft: "1px solid #1e1a16", display: "flex", flexDirection: "column", height: "100%", overflowY: "hidden" } as React.CSSProperties,
+  sidebarHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 20px 16px", borderBottom: "1px solid #1e1a16" },
+  sidebarClose: { background: "transparent", border: "none", color: "#5a5248", fontSize: "20px", cursor: "pointer", lineHeight: 1, padding: "0 4px" },
+  sidebarNewBtn: { margin: "16px 20px 0", background: "transparent", border: "1px solid #2a2520", borderRadius: "7px", color: "#c97b2a", fontFamily: "'Inter', sans-serif", fontSize: "12px", letterSpacing: "0.08em", padding: "9px 14px", cursor: "pointer", textAlign: "left" } as React.CSSProperties,
+  sidebarList: { flex: 1, overflowY: "auto", padding: "12px 12px 20px" } as React.CSSProperties,
+  sidebarItem: { padding: "12px 14px", borderRadius: "8px", cursor: "pointer", marginBottom: "6px", border: "1px solid transparent", transition: "background 0.15s" },
+  sidebarItemActive: { background: "#141210", border: "1px solid #2a2520" },
   proActiveBadge: { fontFamily: "'Inter', sans-serif", fontSize: "11px", letterSpacing: "0.08em", color: "#c97b2a", padding: "4px 10px", background: "#1a1410", border: "1px solid #3d2a15", borderRadius: "6px" },
   freeNotice: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", background: "#141210", border: "1px solid #1e1a16", borderRadius: "8px" },
 };
