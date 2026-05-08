@@ -22,12 +22,22 @@ interface MoodEntry {
 
 function loadEntries(): MoodEntry[] {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-  } catch { return []; }
+    const data = localStorage.getItem(STORAGE_KEY);
+    if (!data) return [];
+    const parsed = JSON.parse(data);
+    if (!Array.isArray(parsed)) return [];
+    return parsed;
+  } catch {
+    return [];
+  }
 }
 
 function saveEntries(entries: MoodEntry[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+  } catch (e) {
+    console.error("Failed to save mood entries:", e);
+  }
 }
 
 function formatDate(iso: string) {
@@ -41,7 +51,7 @@ function formatTime(iso: string) {
 }
 
 export default function VeraMoodTracker() {
-  const [entries, setEntries] = useState<MoodEntry[]>(loadEntries);
+  const [entries, setEntries] = useState<MoodEntry[]>(() => loadEntries());
   const [selected, setSelected] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [view, setView] = useState<"log" | "history">("log");
