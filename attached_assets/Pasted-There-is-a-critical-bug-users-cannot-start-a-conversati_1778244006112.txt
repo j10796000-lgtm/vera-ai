@@ -1,0 +1,80 @@
+There is a critical bug — users cannot start a conversation with Vera at all. 
+The chat input appears but nothing happens when they type or hit send.
+Please fix all possible causes:
+
+1. FIND the main chat component and CHECK the textarea input. 
+   Make sure it looks exactly like this:
+
+<textarea
+  value={input}
+  onChange={(e) => setInput(e.target.value)}
+  onKeyDown={(e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  }}
+  placeholder="say what's real..."
+  disabled={loading}
+/>
+
+2. FIND the send button and make sure it looks exactly like this:
+
+<button
+  onClick={sendMessage}
+  disabled={loading || !input.trim()}
+  type="button"
+>
+  Send
+</button>
+
+   IMPORTANT: Make sure it says type="button" — if it is inside a form 
+   without type="button" it will reload the page instead of sending.
+
+3. FIND the sendMessage function and make sure it starts with this exact check:
+
+const sendMessage = async () => {
+  const text = input.trim();
+  if (!text || loading) return;
+  setLoading(true);
+  ...
+}
+
+4. CHECK that loading is initialized as false:
+
+const [loading, setLoading] = useState(false);
+
+   If loading starts as true the input will be permanently disabled.
+
+5. CHECK that messages is initialized correctly:
+
+const [messages, setMessages] = useState(() => {
+  try {
+    const saved = localStorage.getItem("vera_chat_history");
+    if (!saved) return [{ role: "assistant", content: "Hey. I'm here. What's on your mind?" }];
+    const parsed = JSON.parse(saved);
+    return Array.isArray(parsed) && parsed.length > 0
+      ? parsed
+      : [{ role: "assistant", content: "Hey. I'm here. What's on your mind?" }];
+  } catch {
+    return [{ role: "assistant", content: "Hey. I'm here. What's on your mind?" }];
+  }
+});
+
+6. REMOVE any <form> tags wrapping the input area entirely and replace 
+   with a plain <div>. Forms cause page reloads which break the chat.
+
+7. ADD a console.log at the very start of sendMessage so we can confirm 
+   it is being called:
+
+const sendMessage = async () => {
+  console.log("sendMessage triggered", input);
+  ...
+}
+
+8. MAKE SURE the API key is set as an environment variable in Replit called 
+   ANTHROPIC_API_KEY and that it is being read correctly. If the key is 
+   missing or wrong the first message will silently fail.
+
+9. CHECK for any JavaScript errors in the browser console 
+   (right click → Inspect → Console tab) and fix any red errors shown there.

@@ -247,7 +247,8 @@ router.post(
       .where(eq(messagesTable.conversationId, conversationId))
       .orderBy(messagesTable.createdAt);
 
-    const historyMessages = allMessages.slice(0, -1).map((m) => ({
+    // Limit to last 19 history messages so total context stays ≤ 20 messages
+    const historyMessages = allMessages.slice(0, -1).slice(-19).map((m) => ({
       role: m.role as "user" | "assistant",
       content: m.content,
     }));
@@ -264,28 +265,38 @@ router.post(
 
     let fullResponse = "";
 
-    const stream = anthropic.messages.stream({
-      model: "claude-opus-4-7",
-      max_tokens: 8192,
-      system: SYSTEM_PROMPT,
-      messages: chatMessages,
-    });
+    try {
+      const stream = anthropic.messages.stream({
+        model: "claude-opus-4-7",
+        max_tokens: 1024,
+        system: SYSTEM_PROMPT,
+        messages: chatMessages,
+      });
 
-    for await (const event of stream) {
-      if (
-        event.type === "content_block_delta" &&
-        event.delta.type === "text_delta"
-      ) {
-        fullResponse += event.delta.text;
-        res.write(`data: ${JSON.stringify({ content: event.delta.text })}\n\n`);
+      for await (const event of stream) {
+        if (
+          event.type === "content_block_delta" &&
+          event.delta.type === "text_delta"
+        ) {
+          fullResponse += event.delta.text;
+          res.write(`data: ${JSON.stringify({ content: event.delta.text })}\n\n`);
+        }
       }
+    } catch (streamErr) {
+      req.log.error({ err: streamErr }, "Anthropic stream error");
+      res.write(`data: ${JSON.stringify({ error: true })}\n\n`);
+      res.end();
+      return;
     }
 
-    await db.insert(messagesTable).values({
-      conversationId,
-      role: "assistant",
-      content: fullResponse,
-    });
+    // Only persist if Claude actually returned content
+    if (fullResponse.trim()) {
+      await db.insert(messagesTable).values({
+        conversationId,
+        role: "assistant",
+        content: fullResponse,
+      });
+    }
 
     res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
     res.end();

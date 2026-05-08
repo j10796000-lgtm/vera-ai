@@ -120,7 +120,11 @@ export default function VeraMoodTracker() {
                   ...s.moodBtn,
                   ...(selected === m.id ? { ...s.moodBtnActive, borderColor: m.color, boxShadow: `0 0 0 1px ${m.color}22, 0 0 18px ${m.color}18` } : {}),
                 }}
-                onClick={() => setSelected(selected === m.id ? null : m.id)}
+                onClick={() => {
+                  const next = selected === m.id ? null : m.id;
+                  setSelected(next);
+                  if (next) setTimeout(() => textRef.current?.focus(), 50);
+                }}
                 onMouseEnter={() => setHoveredMood(m.id)}
                 onMouseLeave={() => setHoveredMood(null)}
               >

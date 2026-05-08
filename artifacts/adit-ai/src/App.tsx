@@ -248,14 +248,18 @@ function ChatView({ conversationId, onBack, onNew, isPro }: { conversationId: nu
   });
 
   useEffect(() => {
-    if (conversation && !initialized) {
-      if (conversation.messages && conversation.messages.length > 0) {
-        setMessages(conversation.messages);
-      } else if (messages.length === 0) {
-        setMessages([{ role: "assistant", content: "Hey. I'm Vera. I'm here. What's on your mind?" }]);
-      }
-      setInitialized(true);
+    if (!conversation || initialized) return;
+    if (conversation.messages && conversation.messages.length > 0) {
+      setMessages(conversation.messages);
+    } else {
+      setMessages((prev) =>
+        prev.length === 0
+          ? [{ role: "assistant", content: "Hey. I'm Vera. I'm here. What's on your mind?" }]
+          : prev
+      );
     }
+    setInitialized(true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversation, initialized]);
 
   useEffect(() => {
@@ -460,7 +464,7 @@ function ChatView({ conversationId, onBack, onNew, isPro }: { conversationId: nu
             <button onClick={() => fileInputRef.current?.click()} disabled={loading} style={{ ...s.attachBtn, opacity: loading ? 0.3 : 1 }} title="Attach file">📎</button>
             <button onClick={() => setShowImageGen(true)} disabled={loading || imageGenLoading} style={{ ...s.attachBtn, opacity: loading || imageGenLoading ? 0.3 : 1 }} title="Generate image">🎨</button>
             <textarea ref={textareaRef} value={input} onChange={(e) => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }} placeholder={selectedFile ? "add a message... (optional)" : "say what's real..."} rows={1} style={s.textarea} disabled={loading} />
-            <button onClick={sendMessage} disabled={!canSend} style={{ ...s.sendBtn, opacity: canSend ? 1 : 0.3 }}>↑</button>
+            <button type="button" onClick={sendMessage} disabled={!canSend} style={{ ...s.sendBtn, opacity: canSend ? 1 : 0.3 }}>↑</button>
           </div>
           <p style={s.hint}>Enter to send · Shift+Enter for new line · attach images, PDFs, docs & code · 🎨 generate images</p>
         </div>
