@@ -336,33 +336,36 @@ function ChatView({ conversationId, onBack, onNew, isPro }: { conversationId: nu
     }
   };
 
-  const sendMessage = useCallback(async () => {
-    const text = input.trim();
-    if ((!text && !selectedFile) || loading) return;
+  const sendMessage = useCallback(async (retryText?: string) => {
+    const isRetry = retryText !== undefined;
+    const text = isRetry ? retryText : input.trim();
+    const file = isRetry ? null : selectedFile;
+    const previewUrl = isRetry ? null : imagePreview;
+    if ((!text && !file) || loading) return;
 
-    if (!isPro) {
+    if (!isRetry && !isPro) {
       const count = getDailyCount();
-      if (count >= FREE_DAILY_LIMIT) {
-        setShowPaywall(true);
-        return;
-      }
+      if (count >= FREE_DAILY_LIMIT) { setShowPaywall(true); return; }
     }
 
-    const file = selectedFile; const previewUrl = imagePreview;
     setMessages((prev) => [...prev, { role: "user", content: text || `shared ${file?.name}`, attachmentName: file?.name ?? null }]);
-    setInput(""); setSelectedFile(null); setImagePreview(null);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    if (!isRetry) {
+      setInput(""); setSelectedFile(null); setImagePreview(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      if (textareaRef.current) textareaRef.current.style.height = "auto";
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    }
     setLoading(true); startLoadingCycle();
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-
-    if (!isPro) incrementDailyCount();
+    if (!isRetry && !isPro) incrementDailyCount();
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
       let body: BodyInit; let headers: HeadersInit = {};
       if (file) { const fd = new FormData(); fd.append("content", text); fd.append("file", file); body = fd; }
       else { headers = { "Content-Type": "application/json" }; body = JSON.stringify({ content: text }); }
-      const response = await fetch(`/api/anthropic/conversations/${conversationId}/messages`, { method: "POST", headers, body });
+      const response = await fetch(`/api/anthropic/conversations/${conversationId}/messages`, { method: "POST", headers, body, signal: controller.signal });
+      clearTimeout(timeoutId);
       if (!response.body) throw new Error("No stream");
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let assistantContent = "";
       setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
@@ -372,10 +375,34 @@ function ChatView({ conversationId, onBack, onNew, isPro }: { conversationId: nu
           if (line.startsWith("data: ")) { try { const data = JSON.parse(line.slice(6)); if (data.content) { assistantContent += data.content; setMessages((prev) => { const u = [...prev]; u[u.length - 1] = { role: "assistant", content: assistantContent }; return u; }); } } catch {} }
         }
       }
+      if (!assistantContent.trim()) throw new Error("Empty response");
       qc.invalidateQueries({ queryKey: getListAnthropicConversationsQueryKey() });
-    } catch { setMessages((prev) => [...prev, { role: "assistant", content: "Something got in the way. Tell me again — I'm listening." }]); }
-    finally { setLoading(false); stopLoadingCycle(); }
+    } catch (err: unknown) {
+      const isTimeout = err instanceof Error && err.name === "AbortError";
+      const errMsg = isTimeout
+        ? "That took too long on my end. I'm still here — try again."
+        : "Something got in the way. I'm still here — try again.";
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role === "assistant" && last.content === "") {
+          const u = [...prev]; u[u.length - 1] = { role: "assistant", content: errMsg }; return u;
+        }
+        return [...prev, { role: "assistant", content: errMsg }];
+      });
+    } finally { setLoading(false); stopLoadingCycle(); }
   }, [input, selectedFile, imagePreview, loading, conversationId, qc, isPro]);
+
+  const handleRetry = useCallback(() => {
+    const lastUser = messages.slice().reverse().find(m => m.role === "user");
+    if (!lastUser || loading) return;
+    setMessages(prev => {
+      let trimmed = [...prev];
+      if (trimmed[trimmed.length - 1]?.role === "assistant") trimmed = trimmed.slice(0, -1);
+      if (trimmed[trimmed.length - 1]?.role === "user") trimmed = trimmed.slice(0, -1);
+      return trimmed;
+    });
+    sendMessage(lastUser.content);
+  }, [messages, loading, sendMessage]);
 
   const canSend = !loading && (input.trim().length > 0 || selectedFile !== null);
 
@@ -411,6 +438,9 @@ function ChatView({ conversationId, onBack, onNew, isPro }: { conversationId: nu
                 />
               )}
               {msg.content && msg.content.split("\n").map((line, j) => line ? <p key={j} style={s.msgText}>{line}</p> : <br key={j} />)}
+              {msg.role === "assistant" && i === messages.length - 1 && msg.content.includes("try again") && !loading && (
+                <button onClick={handleRetry} style={s.retryBtn}>↺ retry</button>
+              )}
             </div>
           </div>
         ))}
@@ -727,6 +757,7 @@ const s: Record<string, React.CSSProperties> = {
   brandSub: { fontFamily: "'Inter', sans-serif", fontSize: "11px", fontWeight: 300, color: "#5a5248", letterSpacing: "0.12em", textTransform: "uppercase", marginLeft: "4px" },
   backBtn: { background: "transparent", border: "none", color: "#c97b2a", fontSize: "18px", cursor: "pointer", padding: "0 8px 0 0", fontFamily: "'Lora', serif" },
   signOutBtn: { background: "transparent", border: "1px solid #2a2520", borderRadius: "6px", color: "#5a5248", fontFamily: "'Inter', sans-serif", fontSize: "11px", letterSpacing: "0.08em", padding: "4px 10px", cursor: "pointer" },
+  retryBtn: { marginTop: "10px", display: "block", background: "transparent", border: "1px solid #2a2520", borderRadius: "6px", color: "#c97b2a", fontFamily: "'Inter', sans-serif", fontSize: "12px", letterSpacing: "0.06em", padding: "5px 12px", cursor: "pointer" },
   navTab: { background: "transparent", border: "1px solid transparent", borderRadius: "6px", color: "#5a5248", fontFamily: "'DM Sans', sans-serif", fontSize: "13px", letterSpacing: "0.06em", padding: "5px 14px", cursor: "pointer", transition: "all 0.2s" },
   navTabActive: { background: "#141210", border: "1px solid #2a2520", color: "#c4bdb5" },
   feed: { flex: 1, overflowY: "auto", padding: "24px 24px", display: "flex", flexDirection: "column", gap: "16px", maxWidth: "680px", width: "100%", margin: "0 auto", position: "relative", zIndex: 1 },
